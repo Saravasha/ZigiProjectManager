@@ -150,7 +150,7 @@ select_targets() {
         return
     fi
 
-    echo "Found ${#repos[@]} sibling repositories with suffix '-$suffix':"
+    info "Found ${#repos[@]} sibling repositories with suffix '-$suffix':"
     for i in "${!repos[@]}"; do
         printf "  %2d) %s\n" $((i+1)) "${repos[$i]}"
     done

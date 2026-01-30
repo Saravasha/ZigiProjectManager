@@ -97,7 +97,7 @@ remove_profile() {
     local profiles=("$PROFILE_DIR"/*.json)
     [[ ${#profiles[@]} -eq 0 ]] && { error "No profiles to remove."; return; }
 
-    echo "📁 Select a profile to remove:"
+    info "📁 Select a profile to remove:"
     select profile_file in "${profiles[@]}"; do
         [[ -n "$profile_file" ]] || { warn "Invalid selection"; continue; }
         read -rp "Delete '$profile_file'? (y/n): " confirm
@@ -110,7 +110,7 @@ use_profile() {
     local profiles=("$PROFILE_DIR"/*.json)
     [[ ${#profiles[@]} -eq 0 ]] && { error "No profiles found."; return; }
 
-    echo "📁 Available profiles:"
+    info "📁 Available profiles:"
     select profile_file in "${profiles[@]}"; do
         [[ -n "$profile_file" ]] && break
     done
@@ -244,7 +244,7 @@ init_backend_repo() {
 
     # Ensure backend init migration
     local migrations_dir="$backend_path/Migrations"
-    echo "🔎 Checking backend migrations for init..."
+    info "🔎 Checking backend migrations for init..."
     if [[ -d "$migrations_dir" ]] && find "$migrations_dir" -type f -iname "*init*.cs" | grep -q .; then
         success "Init migration already exists."
     else

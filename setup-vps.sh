@@ -490,17 +490,18 @@ ssh -t -i "$KEY_PATH" "$SSH_USER@$VPS_IP" sudo -E bash -s -- \
   "$SSL_EMAIL" "$BASE_DOMAIN" "$DOMAIN_FE_PROD" "$DOMAIN_FE_STAGING" "$DOMAIN_BE_PROD" "$DOMAIN_BE_STAGING" "$certbot_args" \
   "$SMTP_HOST" "$SMTP_USERNAME" "$SMTP_PASSWORD" "$SMTP_FROM" "$SMTP_PORT" "$PROFILE_NAME" "$NODE_MAJOR" "$DOTNET_SDK_VERSION" <<'EOF_SCRIPT'
 
-if [[ $EUID -ne 0 ]]; then
-  echo "❌ Remote script is NOT running as root"
-  exit 1
-fi
-
 # === re-implementing Colorized echo functions inside heredoc ===
 info()    { echo -e "\033[1;34m[INFO]:🔍 $*\033[0m"; }
 warn()    { echo -e "\033[1;33m[WARN]:⚠️ $*\033[0m"; }
 error()   { echo -e "\033[1;31m[ERROR]:❌ $*\033[0m"; }
 success() { echo -e "\033[1;32m[SUCCESS]:✅ $*\033[0m"; }
 debug()   { echo -e "\033[38;5;208m[DEBUG]:⚙️ $*\033[0m"; }
+
+if [[ $EUID -ne 0 ]]; then
+  error "Remote script is NOT running as root"
+  exit 1
+fi
+
 
 set -eu
 trap 'echo "❌ Setup failed at line $LINENO"; exit 1' ERR
@@ -579,14 +580,14 @@ info "Install docker.io only if not installed"
 if ! dpkg -s docker.io &>/dev/null; then
   apt install -y docker.io
 else
-  echo "docker.io already installed, skipping."
+  info "docker.io already installed, skipping."
 fi
 
 info "Install nginx only if not installed"
 if ! dpkg -s nginx &>/dev/null; then
   apt install -y nginx
 else
-  echo "nginx already installed, skipping."
+  info "nginx already installed, skipping."
 fi
 
 info "Configurating Nginx file limit to 400M"
@@ -594,9 +595,9 @@ NGINX_CONF="/etc/nginx/nginx.conf"
 LINE="client_max_body_size 400M;"
 
 if grep -qF "$LINE" "$NGINX_CONF"; then
-  echo "✅ 'client_max_body_size' already present in nginx.conf"
+  success "'client_max_body_size' already present in nginx.conf"
 else
-  echo "➕ Adding 'client_max_body_size 400M;' to nginx.conf"
+  info "➕ Adding 'client_max_body_size 400M;' to nginx.conf"
   # Insert inside the http block
   sed -i "/http {/a \    $LINE" "$NGINX_CONF"
 fi
@@ -606,14 +607,14 @@ for pkg in certbot python3-certbot-nginx ffmpeg curl apt-transport-https softwar
   if ! dpkg -s $pkg &>/dev/null; then
     apt install -y $pkg
   else
-    echo "$pkg already installed, skipping."
+    info "$pkg already installed, skipping."
   fi
 done
 
 systemctl enable --now docker
 systemctl enable --now nginx
 
-echo "📦 Checking/installing required Python dependencies..."
+info "📦 Checking/installing required Python dependencies..."
 
 # Ensure Python 3 and pip are installed
 if ! command -v python3 >/dev/null 2>&1; then
@@ -622,14 +623,14 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 if ! command -v pip3 >/dev/null 2>&1; then
-  echo "⚙️ Installing pip3..."
+  info "⚙️ Installing pip3..."
   sudo apt-get update -qq
   sudo apt-get install -y python3-pip
 fi
 
 info "Ensure PyNaCl is installed for GitHub secrets encryption"
 if ! python3 -c "import nacl" >/dev/null 2>&1; then
-  echo "⚙️ Installing PyNaCl for secrets encryption..."
+  info "⚙️ Installing PyNaCl for secrets encryption..."
   pip3 install pynacl --quiet
 else
   info "✅ PyNaCl already installed"
@@ -674,7 +675,7 @@ info "🔐 Configuring UFW firewall rules..."
 
 # Enable UFW if not already enabled
 if ! ufw status | grep -q "Status: active"; then
-  echo "🔧 Enabling UFW..."
+  info "🔧 Enabling UFW..."
   ufw --force enable
 fi
 
@@ -967,7 +968,7 @@ for APP_LABEL in frontend backend; do
       exit 1
     fi
 
-    echo "🛠 Registering runner..."
+    info "🛠 Registering runner..."
     ./config.sh --unattended --replace \
       --url "https://github.com/$REPO_OWNER/$REPO_NAME" \
       --token "$TOKEN" \
@@ -981,7 +982,7 @@ for APP_LABEL in frontend backend; do
     success "Runner for $APP_LABEL-$ENV configured."
 
     # Optional: GitHub API check
-    echo "🔍 Verifying runner registration..."
+    info "Verifying runner registration..."
     curl -s -H "Authorization: token $GITHUB_PAT" \
       "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/actions/runners" \
       | jq -r '.runners[] | [.name, (.labels | map(.name) | join(","))] | @tsv' \
@@ -1001,7 +1002,7 @@ for ENV in production staging; do
   DIST_DIR="${RUNNER_WORK_DIR}/dist"
   TARGET_DIR="/opt/apps/frontend-${ENV}"
 
-  echo "🔍 Checking build folder for frontend-${ENV}..."
+  info "Checking build folder for frontend-${ENV}..."
 
   if [[ ! -d "$DIST_DIR" ]]; then
     error "Build folder not found at: $DIST_DIR"
@@ -1047,7 +1048,7 @@ for ENV in production staging; do
     FINAL_ADMIN_PASSWORD="$ADMIN_PASSWORD"
   fi
 
-  echo "🔍 Checking PM2 process: $APP_NAME..."
+  info "Checking PM2 process: $APP_NAME..."
   PM2_STATUS=$(pm2 jlist | jq -r ".[] | select(.name==\"$APP_NAME\") | .pm2_env.status" 2>/dev/null || echo "")
 
   if [[ -z "$PM2_STATUS" ]]; then
@@ -1089,7 +1090,7 @@ ENVIRONMENTS=("staging" "production")
 trigger_workflow() {
   local repo_name=$1
   local workflow_file=$2
-  echo "Triggering workflow $workflow_file on repo $repo_name"
+  info "Triggering workflow $workflow_file on repo $repo_name"
   
   curl -s -X POST \
     -H "Accept: application/vnd.github+json" \
@@ -1281,7 +1282,7 @@ select_backup_config() {
         return 1
     fi
 
-    echo "📂 Select a project to manage backups:"
+    info "📂 Select a project to manage backups:"
     select f in "${configs[@]}" "❌ Cancel"; do
       [[ -z "${f:-}" ]] && continue
         if [[ "$REPLY" -gt 0 && "$REPLY" -le "${#configs[@]}" ]]; then
@@ -1303,7 +1304,7 @@ select_backup_config() {
 
 # === 2. Remote Environment Selector ===
 select_environment() {
-    echo "🌍 Select environment:"
+    info "🌍 Select environment:"
     select ENV in "Production" "Staging" "❌ Cancel"; do
         case $REPLY in
             1)
@@ -1330,7 +1331,7 @@ select_environment() {
 
 # === 3. Get or Update Asset/DB Functions ===
 select_backup_action() {
-    echo "🔁 What would you like to do?"
+    info "🔁 What would you like to do?"
     select ACTION in "[ ⬇️] Get assets & DB from VPS" "[ ⬆️] Update VPS with local assets & DB" "❌ Cancel"; do
         case $REPLY in
             1) BACKUP_ACTION="get"; return 0 ;;
@@ -1343,7 +1344,7 @@ select_backup_action() {
 
 # === 4. Specify Assets and or DB ===
 select_backup_scope() {
-    echo "📦 What should be included?"
+    info "📦 What should be included?"
     select SCOPE in "🖼️ Assets only" "🗄️ Database only" "🖼️🗄️ Assets + Database" "❌ Cancel"; do
         case $REPLY in
             1) INCLUDE_ASSETS=true;  INCLUDE_DB=false; break ;;
