@@ -10,6 +10,7 @@ debug()   { echo -e "\033[38;5;208m[DEBUG]:⚙️ $*\033[0m"; }
 
 # === Config Management ===
 CONFIG_FILE="$HOME/.multi-committer.cfg"
+CLONE_PROFILE_DIR="$HOME/.clone-website-profiles"
 WORKING_REPO=""
 TARGET_REPOS=()
 

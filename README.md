@@ -1,4 +1,4 @@
-# 🌐 Fullstack Website Template Setup
+# 🌐 ZigiProjectManager - A Fullstack Website Template Setup
 
 This repository contains automation scripts to bootstrap a fullstack website project using customizable frontend/backend templates, GitHub integration, and automated VPS deployment.
 

@@ -89,7 +89,9 @@ create_new_profile() {
       runtimes: {}
     }' > "$PROFILE_DIR/$PROJECT_NAME.json"
 
-
+    # Asserting only user may read the file.
+    chmod 600 "$PROFILE_DIR/$PROJECT_NAME"/*.json
+    
     success "Profile saved: $PROFILE_DIR/$PROJECT_NAME.json"
 }
 

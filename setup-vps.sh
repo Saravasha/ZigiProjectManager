@@ -73,28 +73,28 @@ main_config() {
 
     if confirm "🔑 Do you want to generate a new SSH key and copy the public key to clipboard?"; then
         if [[ -f "$KEY_PATH" ]]; then
-        warn "SSH key already exists at: $KEY_PATH"
+          warn "SSH key already exists at: $KEY_PATH"
         else
-        info "🔐 Generating new SSH key at $KEY_PATH"
-        ssh-keygen -t ed25519 -f "$KEY_PATH"
+          info "🔐 Generating new SSH key at $KEY_PATH"
+          ssh-keygen -t ed25519 -f "$KEY_PATH"
         fi
 
         if command -v pbcopy &>/dev/null; then
-        pbcopy < "$PUB_KEY"
-        success "Public key copied to clipboard (macOS)"
+          pbcopy < "$PUB_KEY"
+          success "Public key copied to clipboard (macOS)"
         elif grep -qi microsoft /proc/version && command -v clip.exe &>/dev/null; then
-        cat "$PUB_KEY" | clip.exe
-        success "Public key copied to clipboard (WSL)"
+          cat "$PUB_KEY" | clip.exe
+          success "Public key copied to clipboard (WSL)"
         elif command -v xclip &>/dev/null && [[ -n "${DISPLAY:-}" ]]; then
-        xclip -selection clipboard < "$PUB_KEY"
-        success "Public key copied to clipboard (X11)"
+          xclip -selection clipboard < "$PUB_KEY"
+          success "Public key copied to clipboard (X11)"
         elif command -v wl-copy &>/dev/null; then
-        wl-copy < "$PUB_KEY"
-        success "Public key copied to clipboard (Wayland)"
+          wl-copy < "$PUB_KEY"
+          success "Public key copied to clipboard (Wayland)"
         else
-        warn "Clipboard utility not available. Here's your public key:"
-        echo
-        cat "$PUB_KEY"
+          warn "Clipboard utility not available. Here's your public key:"
+          echo
+          cat "$PUB_KEY"
         fi
     else
         info "⏩ Skipping SSH key generation and clipboard copy."
@@ -170,8 +170,24 @@ main_config() {
     read -s -p "🔐 Admin Password (Production): " ADMIN_PASSWORD; echo
     read -s -p "🔐 Admin Password (Staging): " ADMIN_PASSWORD_STAGING; echo
 
-    read -p "👤 GitHub Username or Org (case-sensitive): " REPO_OWNER
-    read -p "🔐 Paste your GitHub PAT (starts with 'ghp_'): " GITHUB_PAT
+    # read -p "👤 GitHub Username or Org (case-sensitive): " REPO_OWNER
+    
+    set +x
+
+    REP_OWNER=$(jq -r .github_org "$PROFILE_JSON") 
+    info "Skipping Github Username or Org from clone-website-template profile for $PROFILE_NAME, bypassing manual input"
+
+    # read -p "🔐 Paste your GitHub PAT (starts with 'ghp_'): " GITHUB_PAT
+    GITHUB_PAT=$(jq -r .github_pat "$PROFILE_JSON") 
+    info "Taking Github PAT from clone-website-template profile for $PROFILE_NAME, bypassing manual input"
+    
+    set -x
+
+    if [[ -z "$GITHUB_PAT" || "$GITHUB_PAT" == "null" ]]; then
+      error "GitHub PAT missing in profile: $PROFILE_JSON"
+      return 1
+    fi
+
     read -p "📧 SSL Email (Let's Encrypt): " SSL_EMAIL
 
     # === SMTP Profile Selection / Creation ===
