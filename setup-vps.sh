@@ -318,7 +318,6 @@ remove_profile() {
  
 }
 
-
 remove_smtp_profile() {
   info "🗑️  Remove an SMTP profile:"
 
@@ -424,30 +423,30 @@ manage_smtp_profiles() {
   "port": $SMTP_PORT
 }
 EOF
-              success "SMTP profile saved to $SMTP_FILE"
-              break
-          else
-              info "📧 Select an SMTP profile for this VPS:"
-              select SMTP_FILE in "${SMTP_PROFILES[@]}" "Create new profile" "Delete a profile" "❌ Cancel"; do
-                  if [[ "$REPLY" -gt 0 && "$REPLY" -le "${#SMTP_PROFILES[@]}" ]]; then
-                      success "Using SMTP profile: $SMTP_FILE"
-                      return
-                  elif [[ "$REPLY" -eq $((${#SMTP_PROFILES[@]} + 1)) ]]; then
-                      CREATE_NEW_SMTP=true
-                      break
-                  elif [[ "$REPLY" -eq $((${#SMTP_PROFILES[@]} + 2)) ]]; then
-                      remove_smtp_profile
-                      SMTP_PROFILES=("$SMTP_PROFILE_DIR"/*.json)
-                      break
-                  elif [[ "$REPLY" -eq $((${#SMTP_PROFILES[@]} + 3)) ]]; then
-                      warn "Cancelled."
-                      return
-                  else
-                      warn "Invalid option."
-                  fi
-              done
-          fi
-      done
+          success "SMTP profile saved to $SMTP_FILE"
+          break
+      else
+          info "📧 Select an SMTP profile for this VPS:"
+          select SMTP_FILE in "${SMTP_PROFILES[@]}" "Create new profile" "Delete a profile" "❌ Cancel"; do
+              if [[ "$REPLY" -gt 0 && "$REPLY" -le "${#SMTP_PROFILES[@]}" ]]; then
+                  success "Using SMTP profile: $SMTP_FILE"
+                  return
+              elif [[ "$REPLY" -eq $((${#SMTP_PROFILES[@]} + 1)) ]]; then
+                  CREATE_NEW_SMTP=true
+                  break
+              elif [[ "$REPLY" -eq $((${#SMTP_PROFILES[@]} + 2)) ]]; then
+                  remove_smtp_profile
+                  SMTP_PROFILES=("$SMTP_PROFILE_DIR"/*.json)
+                  break
+              elif [[ "$REPLY" -eq $((${#SMTP_PROFILES[@]} + 3)) ]]; then
+                  warn "Cancelled."
+                  return
+              else
+                  warn "Invalid option."
+              fi
+          done
+      fi
+  done
 }
 
 create_new_profile() {
@@ -686,7 +685,6 @@ else
   fi
 fi
 
-
 info "🔐 Configuring UFW firewall rules..."
 
 # Enable UFW if not already enabled
@@ -828,7 +826,6 @@ for c in sqlserver_production sqlserver_staging; do
     fi
   '
 done
-
 
 set -euo pipefail
 
@@ -1033,7 +1030,7 @@ for ENV in production staging; do
   success "frontend-${ENV} build copied to $TARGET_DIR"
 done
 
-# Running PM2 apps
+# Running PM2 backend apps
 
 info "🚀 Starting backend PM2 apps..."
 
@@ -1315,7 +1312,6 @@ select_backup_config() {
         fi
     done
    
-
 }
 
 # === 2. Remote Environment Selector ===
@@ -1509,7 +1505,6 @@ EOF
     # === Step 5: Cleanup VPS host temporary file ===
     ssh -i "$KEY_PATH" "$SSH_USER@$VPS_IP" rm -f "$VPS_HOST_BACKUP"
 }
-
 
 backup_push_db() {
   info "Restoring MSSQL database to VPS Docker container..."
