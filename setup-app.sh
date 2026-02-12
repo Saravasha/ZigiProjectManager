@@ -41,30 +41,31 @@ debug() {
 
 # === Config Paths ===
 CONFIG_DIR="$HOME/.vps-configs"
+APPS_CONFIG_DIR="$CONFIG_DIR/Apps"
 SMTP_PROFILE_DIR="$HOME/.smtp-profiles"
 CLONE_PROFILE_DIR="$HOME/.clone-website-profiles"
 BACKUP_BASE_DIR="$(cd "$(pwd)/.." && pwd)/vps-backups"
 
-mkdir -p "$CONFIG_DIR" "$SMTP_PROFILE_DIR" "$CLONE_PROFILE_DIR" "$BACKUP_BASE_DIR"
+mkdir -p "$CONFIG_DIR" "$SMTP_PROFILE_DIR" "$CLONE_PROFILE_DIR" "$BACKUP_BASE_DIR" "$APPS_CONFIG_DIR"
 
 # === Config State Handlers ===
 CONFIG_LOADED=false
 
-auto_detect_config() {
-    shopt -s nullglob
-    CONFIG_FILES=("$CONFIG_DIR"/*.env)
-    shopt -u nullglob
+# auto_detect_config() {
+#     shopt -s nullglob
+#     CONFIG_FILES=("$APPS_CONFIG_DIR"/*.env)
+#     shopt -u nullglob
 
-    if [[ ${#CONFIG_FILES[@]} -gt 0 ]]; then
-        CONFIG_LOADED=true
-        CONFIG_FILE=$(basename "${CONFIG_FILES[0]}")  # optional: pick first one
-        source "$CONFIG_DIR/$CONFIG_FILE"
-        info "Auto-detected config: $CONFIG_FILE"
-    else
-        CONFIG_LOADED=false
-    fi
-}
-auto_detect_config
+#     if [[ ${#CONFIG_FILES[@]} -gt 0 ]]; then
+#         CONFIG_LOADED=true
+#         CONFIG_FILE=$(basename "${CONFIG_FILES[0]}")  # optional: pick first one
+#         source "$APPS_CONFIG_DIR/$CONFIG_FILE"
+#         info "Auto-detected config: $CONFIG_FILE"
+#     else
+#         CONFIG_LOADED=false
+#     fi
+# }
+# auto_detect_config
 
 init_profile_state() {
     : "${PROFILE_NAME:?PROFILE_NAME is not set}"
@@ -89,180 +90,161 @@ confirm() {
 # === Functions ===
 
 main_config() {
-
     info "Running Main Config loop..."
-    CONFIG_PATH="$CONFIG_DIR/${CONFIG_FILE:?main_config requires CONFIG_FILE to be set}"
 
-    # Prompt only if creating a new config
-    if [[ ! -f "$CONFIG_PATH" ]]; then
-    KEY_NAME="id_vps_key"
-    KEY_PATH="$HOME/.ssh/$KEY_NAME"
-    PUB_KEY="${KEY_PATH}.pub"
+    # Determine the config path: argument overrides default
+    local CONFIG_PATH="${1:-$APPS_CONFIG_DIR/${CONFIG_NAME}.env}"
+    debug "CONFIG_PATH: $CONFIG_PATH"
 
-    # === Step 3: Ask User if SSH Key Setup Should Proceed ===
-    info "Hi and welcome to the VPS Setup"
+    if [[ -f "$CONFIG_PATH" ]]; then
+        # -------------------------------
+        # Existing config branch
+        # -------------------------------
+        success "📂 Loaded existing config from $CONFIG_PATH"
+        source "$CONFIG_PATH"
+        init_profile_state || return
+        CONFIG_LOADED=true
 
-    if confirm "🔑 Do you want to generate a new SSH key and copy the public key to clipboard?"; then
-        if [[ -f "$KEY_PATH" ]]; then
-          warn "SSH key already exists at: $KEY_PATH"
-        else
-          info "🔐 Generating new SSH key at $KEY_PATH"
-          ssh-keygen -t ed25519 -f "$KEY_PATH"
-        fi
-
-        if command -v pbcopy &>/dev/null; then
-          pbcopy < "$PUB_KEY"
-          success "Public key copied to clipboard (macOS)"
-        elif grep -qi microsoft /proc/version && command -v clip.exe &>/dev/null; then
-          cat "$PUB_KEY" | clip.exe
-          success "Public key copied to clipboard (WSL)"
-        elif command -v xclip &>/dev/null && [[ -n "${DISPLAY:-}" ]]; then
-          xclip -selection clipboard < "$PUB_KEY"
-          success "Public key copied to clipboard (X11)"
-        elif command -v wl-copy &>/dev/null; then
-          wl-copy < "$PUB_KEY"
-          success "Public key copied to clipboard (Wayland)"
-        else
-          warn "Clipboard utility not available. Here's your public key:"
-          echo
-          cat "$PUB_KEY"
-        fi
     else
-        info "⏩ Skipping SSH key generation and clipboard copy."
+        # -------------------------------
+        # New config branch
+        # -------------------------------
+        info "Creating new config at $CONFIG_PATH"
+
+        KEY_NAME="id_vps_key"
+        KEY_PATH="$HOME/.ssh/$KEY_NAME"
+        PUB_KEY="${KEY_PATH}.pub"
+
+        # === Step: Select child clone-website-template profile ===
+        PROFILE_FILES=()
+        PROFILE_LABELS=()
+        shopt -s nullglob
+        for file in "$CLONE_PROFILE_DIR"/*.json; do
+            [[ -f "$file" ]] || continue
+            PARENT_PROJECT=$(jq -r '.parent_project // empty' "$file")
+            if [[ -n "$PARENT_PROJECT" ]]; then
+                PROFILE_FILES+=("$file")
+                PROFILE_NAME=$(basename "$file" .json)
+                PROFILE_LABELS+=("$PROFILE_NAME [Parent: $PARENT_PROJECT]")
+            fi
+        done
+        shopt -u nullglob
+
+        if [[ ${#PROFILE_FILES[@]} -eq 0 ]]; then
+            warn "No child clone-website-template profiles found under $CLONE_PROFILE_DIR"
+            return 1
+        fi
+
+        PROFILE_LABELS+=("❌ Cancel")
+        info "📂 Select a child clone-website-template profile:"
+        select CHOICE in "${PROFILE_LABELS[@]}"; do
+            if [[ "$CHOICE" == "❌ Cancel" ]]; then
+                warn "Cancelled."
+                return 1
+            elif [[ -n "$CHOICE" ]]; then
+                INDEX=$((REPLY - 1))
+                PROFILE_JSON="${PROFILE_FILES[$INDEX]}"
+                PROFILE_NAME=$(basename "$PROFILE_JSON" .json)
+                success "Selected child profile: $PROFILE_NAME (Parent: $(jq -r '.parent_project' "$PROFILE_JSON"))"
+                break
+            else
+                warn "Invalid selection. Try again."
+            fi
+        done
+
+        PROJECT_NAME=$(jq -r '.project_name // empty' "$PROFILE_JSON")
+        API_BASE_PATH=$(jq -r '.api_base_path // empty' "$PROFILE_JSON")
+        PARENT_PROJECT_NAME=$(jq -r '.parent_project // empty' "$PROFILE_JSON")
+        CHILD_PROFILE_NAME="$PROJECT_NAME"
+
+        if [[ -n "$PARENT_PROJECT_NAME" ]]; then
+            info "Child profile detected. Parent project: $PARENT_PROJECT_NAME"
+            PARENT_ENV_FILE="$CONFIG_DIR/${PARENT_PROJECT_NAME}.env"
+            [[ -f "$PARENT_ENV_FILE" ]] || { error "Parent .env not found: $PARENT_ENV_FILE"; return 1; }
+            info "Parent env found at $PARENT_ENV_FILE"
+
+            # Source parent environment
+            set -a
+            source "$PARENT_ENV_FILE"
+            set +a
+
+            PROFILE_NAME="$CHILD_PROFILE_NAME"
+
+            DOMAIN_FE_PROD="www.${BASE_DOMAIN}${API_BASE_PATH}"
+            DOMAIN_FE_STAGING="www.staging.${BASE_DOMAIN}${API_BASE_PATH}"
+            DOMAIN_BE_PROD="www.admin.${BASE_DOMAIN}${API_BASE_PATH}"
+            DOMAIN_BE_STAGING="www.admin-staging.${BASE_DOMAIN}${API_BASE_PATH}"
+            PRODUCTION_URL_TARGET="https://admin.${BASE_DOMAIN}${API_BASE_PATH}/"
+
+            info "This is a child app config (child of: $PARENT_PROJECT_NAME)"
+            info "✅ Parent project environment loaded, child API base path applied: $API_BASE_PATH"
+        else
+            error "Selected child profile '$PROJECT_NAME' has no parent_project. Cannot proceed."
+            return 1
+        fi
+
+        unset REPO_NAME_1 REPO_NAME_2
+
+        REPO_NAME_1=$(jq -r '.frontend' "$PROFILE_JSON")
+        REPO_NAME_2=$(jq -r '.backend' "$PROFILE_JSON")
+
+
+
+        # Hard validation
+        [[ -n "$REPO_NAME_1" ]] || { error "frontend repo missing in $PROFILE_JSON"; return 1; }
+        [[ -n "$REPO_NAME_2" ]] || { error "backend repo missing in $PROFILE_JSON"; return 1; }
+
+        info "📦 Getting the repos for the $REPO_NAME_1 and $REPO_NAME_2 applications..."
+        debug "📦 Frontend repo: $REPO_NAME_1"
+        debug "📦 Backend repo:  $REPO_NAME_2"
+
+        # Optional: Override passwords
+        if confirm "Do you want to manually override MSSQL or Admin passwords for this child app?"; then
+            read -s -p "🔐 STAGING MSSQL password: " STAGING_PASS; echo
+            read -s -p "🔐 PRODUCTION MSSQL password: " PROD_PASS; echo
+            read -s -p "🔐 Admin Password (Production): " ADMIN_PASSWORD; echo
+            read -s -p "🔐 Admin Password (Staging): " ADMIN_PASSWORD_STAGING; echo
+        else
+            info "⚡ Using parent project passwords for MSSQL and Admin."
+            info "Using base domain: $BASE_DOMAIN"
+        fi
+
+        info "Loading SMTP settings from parent env: $PARENT_ENV_FILE"
+        success "✅ Inherited SMTP profile from parent: $SMTP_PROFILE_NAME"
+
+        # GitHub info
+        REPO_OWNER=$(jq -r .github_org "$PROFILE_JSON")
+        info "Skipping Github Username/Org, using clone-website-template profile"
+        GITHUB_PAT=$(jq -r .github_pat "$PROFILE_JSON")
+        info "Using GitHub PAT from profile"
+        debug "API_BASE_PATH: $API_BASE_PATH"
+
+        [[ -n "$GITHUB_PAT" && "$GITHUB_PAT" != "null" ]] || { error "GitHub PAT missing"; return 1; }
+        : "${SSL_EMAIL:?SSL_EMAIL missing in parent env}"
+
+        # --- Persist new config and oad the new config immediately ---
+        info "Persisting new config"
+        persist_config "$CONFIG_PATH"
+       
     fi
 
-    
-    if confirm "⏳ Have you already pasted the public key into ~/.ssh/authorized_keys on your VPS?"; then
-        success "Public key setup confirmed. Continuing..."
+    # --- Proceed to VPS setup ---
+    if confirm "Do you want to continue to setting up the VPS with remote operations now?"; then
+        success "Proceeding with Setup VPS..."
+        debug "Local PROFILE_NAME='$PROFILE_NAME'"
+        setup_vps
     else
-        warn "Skipping key setup. Make sure the key is already added to the VPS before continuing."
+        info "⏩ Returning to Main Menu."
     fi
+}
 
-    # === Step 4: Select clone-website profile ===
-    # Force profile selection for new configs
-    unset PROFILE_NAME  # ensure no previous value interferes
 
-    shopt -s nullglob
-    PROFILE_FILES=("$CLONE_PROFILE_DIR"/*.json)
-    shopt -u nullglob
+persist_config() {
+    local path="$1"
 
-    PROFILE_OPTIONS=()
-    for file in "${PROFILE_FILES[@]}"; do
-        [[ -f "$file" ]] && PROFILE_OPTIONS+=("$(basename "$file" .json)")
-    done
+    cat > "$path" <<EOF
+PARENT_PROJECT_NAME="$PARENT_PROJECT_NAME"
 
-    if [[ ${#PROFILE_OPTIONS[@]} -eq 0 ]]; then
-        warn "No clone-website profiles found. Create one first."
-        return
-    fi
-
-    info "📂 Select a clone-website profile:"
-    select PROFILE_NAME in "${PROFILE_OPTIONS[@]}" "❌ Cancel"; do
-        if [[ "$REPLY" =~ ^[0-9]+$ ]] && [[ "$REPLY" -gt 0 && "$REPLY" -le "${#PROFILE_OPTIONS[@]}" ]]; then
-            success "Using profile: $PROFILE_NAME"
-            info "PROFILE_NAME=\"$PROFILE_NAME\"" >> "$CONFIG_PATH"
-            break
-        elif [[ "$PROFILE_NAME" == "❌ Cancel" ]]; then
-            warn "Cancelled."
-            return
-        else
-            warn "Invalid option."
-        fi
-    done
-
-    # === Load repo names from JSON profile ===
-    PROFILE_JSON="$CLONE_PROFILE_DIR/$PROFILE_NAME.json"
-    REPO_NAME_1=$(jq -r .frontend "$PROFILE_JSON")
-    REPO_NAME_2=$(jq -r .backend "$PROFILE_JSON")
-
-    # === VPS + GitHub settings ===
-    read -p "🌐 VPS IP or hostname: " VPS_IP
-    read -p "👤 SSH username [default: root]: " SSH_USER
-    SSH_USER=${SSH_USER:-root}
-
-    read -s -p "🔐 STAGING MSSQL password: " STAGING_PASS; echo
-    read -s -p "🔐 PRODUCTION MSSQL password: " PROD_PASS; echo
-
-    read -rp "Enter your base domain (e.g. saravasha.com): " BASE_DOMAIN
-    if [[ -z "$BASE_DOMAIN" ]]; then
-        error "Base domain cannot be empty."
-        return
-    fi
-
-    info "Using base domain: $BASE_DOMAIN"
-
-    BASE_DOMAIN="${BASE_DOMAIN}"
-    DOMAIN_FE_PROD="www.${BASE_DOMAIN}"
-    DOMAIN_FE_STAGING="www.staging.${BASE_DOMAIN}"
-    DOMAIN_BE_PROD="www.admin.${BASE_DOMAIN}"
-    DOMAIN_BE_STAGING="www.admin-staging.${BASE_DOMAIN}"
-    PRODUCTION_URL_TARGET="https://admin.${BASE_DOMAIN}/"
-
-    read -s -p "🔐 Admin Password (Production): " ADMIN_PASSWORD; echo
-    read -s -p "🔐 Admin Password (Staging): " ADMIN_PASSWORD_STAGING; echo
-
-    # read -p "👤 GitHub Username or Org (case-sensitive): " REPO_OWNER
-    
-
-    REP_OWNER=$(jq -r .github_org "$PROFILE_JSON") 
-    info "Skipping Github Username or Org from clone-website-template profile for $PROFILE_NAME, bypassing manual input"
-
-    # read -p "🔐 Paste your GitHub PAT (starts with 'ghp_'): " GITHUB_PAT
-    GITHUB_PAT=$(jq -r .github_pat "$PROFILE_JSON") 
-    info "Taking Github PAT from clone-website-template profile for $PROFILE_NAME, bypassing manual input"
-    
-
-    if [[ -z "$GITHUB_PAT" || "$GITHUB_PAT" == "null" ]]; then
-      error "GitHub PAT missing in profile: $PROFILE_JSON"
-      return 1
-    fi
-
-    read -p "📧 SSL Email (Let's Encrypt): " SSL_EMAIL
-
-    # === SMTP Profile Selection / Creation ===
-    shopt -s nullglob
-    SMTP_PROFILES=("$SMTP_PROFILE_DIR"/*.json)
-    shopt -u nullglob
-    
-    info "📧 Select an SMTP profile for this VPS config:"
-    select SMTP_FILE in "${SMTP_PROFILES[@]}" "➕ Create new SMTP profile" "❌ Cancel"; do
-        if [[ "$REPLY" -le ${#SMTP_PROFILES[@]} ]]; then
-            success "Selected SMTP profile: $(basename "$SMTP_FILE")"
-            SMTP_HOST=$(jq -r .host "$SMTP_FILE")
-            SMTP_USERNAME=$(jq -r .username "$SMTP_FILE")
-            SMTP_PASSWORD=$(jq -r .password "$SMTP_FILE")
-            SMTP_FROM=$(jq -r .from "$SMTP_FILE")
-            SMTP_PORT=$(jq -r .port "$SMTP_FILE")
-            SMTP_PROFILE_NAME="$(basename "$SMTP_FILE")"
-            break
-        elif [[ "$REPLY" -eq $((${#SMTP_PROFILES[@]}+1)) ]]; then
-            info "➕ Creating new SMTP profile..."
-            read -rp "SMTP Host: " SMTP_HOST
-            read -rp "SMTP Username: " SMTP_USERNAME
-            read -srp "SMTP Password: " SMTP_PASSWORD; echo
-            read -rp "SMTP From Email: " SMTP_FROM
-            read -rp "SMTP Port: " SMTP_PORT
-            SMTP_PROFILE_NAME="custom-$(date +%s)"
-            NEW_PROFILE="$SMTP_PROFILE_DIR/$SMTP_PROFILE_NAME.json"
-            jq -n \
-                --arg host "$SMTP_HOST" \
-                --arg username "$SMTP_USERNAME" \
-                --arg password "$SMTP_PASSWORD" \
-                --arg from "$SMTP_FROM" \
-                --arg port "$SMTP_PORT" \
-                '{host:$host,username:$username,password:$password,from:$from,port:$port}' > "$NEW_PROFILE"
-            success "Created new SMTP profile: $SMTP_PROFILE_NAME"
-            break
-        elif [[ "$REPLY" -eq $((${#SMTP_PROFILES[@]}+2)) ]]; then
-            warn "Cancelled."
-            return
-        else
-            error "Invalid option."
-        fi
-    done
-
-# === Persist config ===
-cat > "$CONFIG_PATH" <<EOF
 KEY_NAME="$KEY_NAME"
 KEY_PATH="$KEY_PATH"
 PUB_KEY="$PUB_KEY"
@@ -283,6 +265,7 @@ REPO_NAME_1="$REPO_NAME_1"
 REPO_NAME_2="$REPO_NAME_2"
 GITHUB_PAT="$GITHUB_PAT"
 SSL_EMAIL="$SSL_EMAIL"
+API_BASE_PATH="$API_BASE_PATH"
 
 # clone-website profile reference
 PROFILE_NAME="$PROFILE_NAME"
@@ -296,29 +279,20 @@ SMTP_FROM="$SMTP_FROM"
 SMTP_PORT="$SMTP_PORT"
 EOF
 
-        success "Config saved."
-    else
-        success "📂 Loaded existing config from $CONFIG_PATH"
-        source "$CONFIG_PATH"
-
-        init_profile_state || return
-        CONFIG_LOADED=true
-    fi
-
-    if confirm "Do you want to continue to setting up the VPS with remote operations now?"; then
-        success "Proceeding with Setup VPS..."
-        setup_vps
-    else
-        info "⏩ Returning to Main Menu."
-    fi
+    # Load immediately
+    source "$path"
+    init_profile_state || return
+    CONFIG_LOADED=true
+    success "✅ Config saved and loaded: $path"
 }
 
-remove_profile() {
-    info "🗑️ Remove a saved VPS config:"
 
-    shopt -s nullglob
-    EXISTING=("$CONFIG_DIR"/*.env)
-    shopt -u nullglob
+remove_profile() {
+  info "🗑️ Remove a saved Child app config:"
+
+  shopt -s nullglob
+  EXISTING=("$APPS_CONFIG_DIR"/*.env)
+  shopt -u nullglob
 
   if [ ${#EXISTING[@]} -eq 0 ]; then
     warn "No configs found to delete."
@@ -347,193 +321,89 @@ remove_profile() {
  
 }
 
-remove_smtp_profile() {
-  info "🗑️  Remove an SMTP profile:"
-
-  shopt -s nullglob
-  SMTP_PROFILES=("$SMTP_PROFILE_DIR"/*.json)
-  shopt -u nullglob
-
-  if [[ ${#SMTP_PROFILES[@]} -eq 0 ]]; then
-    warn "No SMTP profiles found."
-    return
-  fi
-
-  info "Choose an SMTP profile to delete:"
-  select f in "${SMTP_PROFILES[@]}" "❌ Cancel"; do
-    [[ -z "${f:-}" ]] && continue
-    if [[ "$REPLY" -gt 0 && "$REPLY" -le "${#SMTP_PROFILES[@]}" ]]; then
-      PROFILE_NAME="$(basename "$f")"
-      if confirm "⚠️ Are you sure you want to delete $PROFILE_NAME?"; then
-        rm -f "$f"
-        success "Deleted SMTP profile: $PROFILE_NAME"
-      else
-        warn "Deletion cancelled."
-      fi
-      break
-    elif [[ "$f" == "❌ Cancel" ]]; then
-      warn "Cancelled."
-      break
-    else
-      error "Invalid option."
-    fi
-  done
-
-}
-
 load_profile() {
-
     info "Load saved config"
 
     shopt -s nullglob
-    CONFIG_FILES=("$CONFIG_DIR"/*.env)
+    CONFIG_FILES=("$APPS_CONFIG_DIR"/*.env)
     shopt -u nullglob
 
-      CONFIG_OPTIONS=()
-      for file in "${CONFIG_FILES[@]}"; do
+    CONFIG_OPTIONS=()
+    for file in "${CONFIG_FILES[@]}"; do
         [[ -f "$file" ]] && CONFIG_OPTIONS+=("$(basename "$file")")
-      done
+    done
 
-      if [[ ${#CONFIG_OPTIONS[@]} -eq 0 ]]; then
+    if [[ ${#CONFIG_OPTIONS[@]} -eq 0 ]]; then
         error "No saved configs to load."
         return
-      fi
+    fi
 
-      info "Choose a saved configuration to load:"
-      select conf in "${CONFIG_OPTIONS[@]}" "❌ Cancel"; do
+    info "Choose a saved configuration to load:"
+    select conf in "${CONFIG_OPTIONS[@]}" "❌ Cancel"; do
         if [[ "$REPLY" -gt 0 && "$REPLY" -le "${#CONFIG_OPTIONS[@]}" ]]; then
-          CONFIG_FILE="${CONFIG_OPTIONS[$((REPLY - 1))]}"
-          success "Loading saved config: $CONFIG_FILE"
-          source "$CONFIG_DIR/$CONFIG_FILE"
-          CONFIG_LOADED=true
-          init_profile_state || return
-          main_config
-          return # exit both select loops
+            CONFIG_FILE="${CONFIG_OPTIONS[$((REPLY-1))]}"
+            CONFIG_NAME="${CONFIG_FILE%.env}"        # strip .env extension
+            CONFIG_PATH="$APPS_CONFIG_DIR/$CONFIG_FILE"
+            success "Loading saved config: $CONFIG_FILE"
+            source "$CONFIG_PATH"
+            CONFIG_LOADED=true
+            init_profile_state || return
+
+            # Pass the config path explicitly to main_config
+            main_config "$CONFIG_PATH"
+            return
         elif [[ "$conf" == "❌ Cancel" ]]; then
-          warn "Cancelled."
-          return
+            warn "Cancelled."
+            return
         else
-          warn "Invalid option."
+            warn "Invalid option."
         fi
-      done
-}
-
-manage_smtp_profiles() {
-    info "Manage SMTP Profiles"
-      shopt -s nullglob
-      SMTP_PROFILES=("$SMTP_PROFILE_DIR"/*.json)
-      shopt -u nullglob
-
-      if [ ${#SMTP_PROFILES[@]} -eq 0 ]; then
-          info "⚠️ No SMTP profiles found. Let's create one now."
-          CREATE_NEW_SMTP=true
-      else
-          CREATE_NEW_SMTP=false
-      fi
-
-      while true; do
-          if $CREATE_NEW_SMTP; then
-              info "📧 Creating a new SMTP profile..."
-              read -rp "Enter a profile name (e.g. default): " SMTP_NAME
-              read -rp "SMTP host: " SMTP_HOST
-              read -rp "SMTP username: " SMTP_USERNAME
-              read -srp "SMTP password: " SMTP_PASSWORD; echo
-              read -rp "From email address: " SMTP_FROM
-              read -rp "SMTP port [587]: " SMTP_PORT
-              SMTP_PORT=${SMTP_PORT:-587}
-
-              SMTP_FILE="$SMTP_PROFILE_DIR/${SMTP_NAME}.json"
-              cat > "$SMTP_FILE" <<EOF
-{
-  "host": "$SMTP_HOST",
-  "username": "$SMTP_USERNAME",
-  "password": "$SMTP_PASSWORD",
-  "from": "$SMTP_FROM",
-  "port": $SMTP_PORT
-}
-EOF
-          success "SMTP profile saved to $SMTP_FILE"
-          break
-      else
-          info "📧 Select an SMTP profile for this VPS:"
-          select SMTP_FILE in "${SMTP_PROFILES[@]}" "Create new profile" "Delete a profile" "❌ Cancel"; do
-              if [[ "$REPLY" -gt 0 && "$REPLY" -le "${#SMTP_PROFILES[@]}" ]]; then
-                  success "Using SMTP profile: $SMTP_FILE"
-                  return
-              elif [[ "$REPLY" -eq $((${#SMTP_PROFILES[@]} + 1)) ]]; then
-                  CREATE_NEW_SMTP=true
-                  break
-              elif [[ "$REPLY" -eq $((${#SMTP_PROFILES[@]} + 2)) ]]; then
-                  remove_smtp_profile
-                  SMTP_PROFILES=("$SMTP_PROFILE_DIR"/*.json)
-                  break
-              elif [[ "$REPLY" -eq $((${#SMTP_PROFILES[@]} + 3)) ]]; then
-                  warn "Cancelled."
-                  return
-              else
-                  warn "Invalid option."
-              fi
-          done
-      fi
-  done
+    done
 }
 
 create_new_profile() {
-    info "Create new config"
-    read -rp "Enter a name for your new config (e.g. Example): " CONFIG_NAME
+    info "Create new child app config"
+
+    # Ask user for config name
+    read -rp "Enter a name for your new config (e.g. ExampleApp): " CONFIG_NAME
     CONFIG_FILE="${CONFIG_NAME}.env"
-    info "Creating new config: $CONFIG_NAME"
-    main_config
+    CONFIG_PATH="$APPS_CONFIG_DIR/$CONFIG_FILE"
+
+    debug "CONFIG_NAME in main_config: $CONFIG_NAME"
+    debug "CONFIG_PATH in main_config: $CONFIG_PATH"
+
+    if [[ -f "$CONFIG_PATH" ]]; then
+        error "Config '$CONFIG_NAME' already exists in Apps."
+        return 1
+    fi
+
+    info "Creating new config: $CONFIG_NAME at $CONFIG_PATH"
+
+    # Pass the path explicitly to main_config
+    main_config "$CONFIG_PATH"
 }
+
 
 setup_vps() {
 
     if ! $CONFIG_LOADED; then
-        error "No config loaded. Please create or load a config first."
-        return
+      error "No config loaded. Please create or load a config first."
+      return
     fi
 
+    debug "PROFILE_NAME='$PROFILE_NAME'"
+    
     info "Running VPS setup..."
     
-    info "Choose Certbot mode:"
-    info "1) Staging (testing, no rate limits) - When running the onboarder for the first time use Staging, use Production afterwards."
-    info "2) Production (live certificates)"
-    info "3) Skip (You know what you're doing)"
-    read -rp "Enter choice [1, 2 or 3]: " cert_mode
-
-    if [[ "$cert_mode" == "2" ]]; then
-        info "🔐 Running Certbot interactively in PRODUCTION mode..."
-        ssh -t -i "$KEY_PATH" "$SSH_USER@$VPS_IP" 'sudo certbot'
-        success "Certbot finished. Exiting."
-        return
-    elif [[ "$cert_mode" == "3" ]]; then
-      info "⏭️ Skipping Certbot setup. You must configure certificates manually."
-      certbot_args="SKIP_CERTBOT"
-    else
-        certbot_args="--staging"
-        info "Running Certbot in STAGING mode at the near end of setup."
-    fi
-
-
-    NODE_VERSION=$(jq -r '.runtimes.node // empty' "$PROFILE_JSON")
-    DOTNET_VERSION=$(jq -r '.runtimes.dotnet // empty' "$PROFILE_JSON")
-
-    [[ -z "$NODE_VERSION" ]] && NODE_VERSION="18"
-    [[ -z "$DOTNET_VERSION" ]] && DOTNET_VERSION="8.0"
-    NODE_VERSION="${NODE_VERSION#v}"
-    NODE_MAJOR="${NODE_VERSION%%.*}"
-    DOTNET_SDK_VERSION="${DOTNET_VERSION#net}"
-    
-    # debug "$NODE_MAJOR"
-    # debug "$DOTNET_SDK_VERSION"
+    info "Skipping Certbot because we already did that step in VPS Setup..."
 
 # === Step 5: SSH and Setup ===
 ssh -t -i "$KEY_PATH" "$SSH_USER@$VPS_IP" sudo -E bash -s -- \
   "$VPS_IP" "$PROD_PASS" "$STAGING_PASS" "$ADMIN_PASSWORD" "$ADMIN_PASSWORD_STAGING" \
   "$PRODUCTION_URL_TARGET" "$REPO_OWNER" "$REPO_NAME_1" "$REPO_NAME_2" "$GITHUB_PAT" \
-  "$SSL_EMAIL" "$BASE_DOMAIN" "$DOMAIN_FE_PROD" "$DOMAIN_FE_STAGING" "$DOMAIN_BE_PROD" "$DOMAIN_BE_STAGING" "$certbot_args" \
-  "$SMTP_HOST" "$SMTP_USERNAME" "$SMTP_PASSWORD" "$SMTP_FROM" "$SMTP_PORT" "$PROFILE_NAME" "$NODE_MAJOR" "$DOTNET_SDK_VERSION" \
-  "$DEBUG=" "$DEBUG_VERBOSE" <<'EOF_SCRIPT'
+  "$SSL_EMAIL" "$BASE_DOMAIN" "$DOMAIN_FE_PROD" "$DOMAIN_FE_STAGING" "$DOMAIN_BE_PROD" "$DOMAIN_BE_STAGING" \
+  "$SMTP_HOST" "$SMTP_USERNAME" "$SMTP_PASSWORD" "$SMTP_FROM" "$SMTP_PORT" "$PROFILE_NAME" \
+  "$API_BASE_PATH" "$DEBUG" "$DEBUG_VERBOSE" "$PARENT_PROJECT_NAME" <<'EOF_SCRIPT'
 
 set -eu
 trap 'echo "❌ Setup failed at line $LINENO"; exit 1' ERR
@@ -559,17 +429,22 @@ DOMAIN_FE_PROD="${13}"
 DOMAIN_FE_STAGING="${14}"
 DOMAIN_BE_PROD="${15}"
 DOMAIN_BE_STAGING="${16}"
-certbot_args="${17:-SKIP_CERTBOT}"
-SMTP_HOST="${18}"
-SMTP_USERNAME="${19}"
-SMTP_PASSWORD="${20}"
-SMTP_FROM="${21}"
-SMTP_PORT="${22}"
-PROFILE_NAME="${23}"
-NODE_MAJOR="${24:-}"
-DOTNET_SDK_VERSION="${25:-}"
-DEBUG="${26:-false}"
-DEBUG_VERBOSE="${27:-false}"
+SMTP_HOST="${17}"
+SMTP_USERNAME="${18}"
+SMTP_PASSWORD="${19}"
+SMTP_FROM="${20}"
+SMTP_PORT="${21}"
+PROFILE_NAME="${22}"
+API_BASE_PATH="${23:-}"
+DEBUG="${24:-false}"
+DEBUG_VERBOSE="${25:-false}"
+PARENT_PROJECT_NAME="${26}"
+
+env | sort
+echo "DEBUG: All passed arguments"
+for i in {1..26}; do
+    eval "echo ARG$i=\${$i}"
+done
 
 # === re-implementing Colorized echo functions inside heredoc ===
 info()    { echo -e "\033[1;34m[INFO]:🔍 $*\033[0m"; }
@@ -582,8 +457,14 @@ debug() {
   fi
 }
 
+info "💡 We are on the remote machine now!"
+
+debug "PROFILE_NAME: $PROFILE_NAME"
+
 # Set environment file
+PROJECT_NAME="${PARENT_PROJECT_NAME}-${PROFILE_NAME}"
 SAFE_REPO_OWNER=$(echo "$REPO_OWNER" | tr -cd '[:alnum:]_-')
+SAFE_PROJECT_NAME=$(echo "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]_-')
 ENV_FILE="/etc/myapp_${SAFE_REPO_OWNER}-${PROFILE_NAME}.env"
 
 RUNNER_PREFIX="${SAFE_REPO_OWNER}-${PROFILE_NAME}"
@@ -616,102 +497,6 @@ cleanup_old_runners() {
     success "Cleanup for $RUNNER_PREFIX completed."
 }
 
-info "🔄 Updating package index..."
-apt update -y
-
-info "Install docker.io only if not installed"
-if ! dpkg -s docker.io &>/dev/null; then
-  apt install -y docker.io
-else
-  info "docker.io already installed, skipping."
-fi
-
-info "Install nginx only if not installed"
-if ! dpkg -s nginx &>/dev/null; then
-  apt install -y nginx
-else
-  info "nginx already installed, skipping."
-fi
-
-info "Configurating Nginx file limit to 400M"
-NGINX_CONF="/etc/nginx/nginx.conf"
-LINE="client_max_body_size 400M;"
-
-if grep -qF "$LINE" "$NGINX_CONF"; then
-  success "'client_max_body_size' already present in nginx.conf"
-else
-  info "➕ Adding 'client_max_body_size 400M;' to nginx.conf"
-  # Insert inside the http block
-  sed -i "/http {/a \    $LINE" "$NGINX_CONF"
-fi
-
-info "Install certbot and python3-certbot-nginx if missing"
-for pkg in certbot python3-certbot-nginx ffmpeg curl apt-transport-https software-properties-common jq; do
-  if ! dpkg -s $pkg &>/dev/null; then
-    apt install -y $pkg
-  else
-    info "$pkg already installed, skipping."
-  fi
-done
-
-systemctl enable --now docker
-systemctl enable --now nginx
-
-info "📦 Checking/installing required Python dependencies..."
-
-# Ensure Python 3 and pip are installed
-if ! command -v python3 >/dev/null 2>&1; then
-  error "Python3 is not installed. Please install Python 3 manually."
-  exit 1
-fi
-
-if ! command -v pip3 >/dev/null 2>&1; then
-  info "⚙️ Installing pip3..."
-  sudo apt-get update -qq
-  sudo apt-get install -y python3-pip
-fi
-
-info "Ensure PyNaCl is installed for GitHub secrets encryption"
-if ! python3 -c "import nacl" >/dev/null 2>&1; then
-  info "⚙️ Installing PyNaCl for secrets encryption..."
-  pip3 install pynacl --quiet
-else
-  info "✅ PyNaCl already installed"
-fi
-
-info "🔄 Installing Node.js v$NODE_MAJOR"
-
-if ! command -v node &>/dev/null || [[ "$(node -v)" != v$NODE_MAJOR.* ]]; then
-  curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -E -
-  apt-get install -y nodejs
-else
-  info "Node.js $(node -v) already installed."
-fi
-
-info "🔄 Installing pm2 globally only if not installed"
-if ! command -v pm2 &>/dev/null; then
-  info "Installing pm2 globally"
-  npm install -g pm2
-else
-  info "pm2 already installed globally."
-fi
-
-info "⬇️ Installing .NET SDK $DOTNET_SDK_VERSION"
-
-if ! command -v dotnet &>/dev/null; then
-  wget -q https://packages.microsoft.com/config/ubuntu/22.04/packages-microsoft-prod.deb
-  dpkg -i packages-microsoft-prod.deb && rm packages-microsoft-prod.deb
-  apt-get update
-  apt-get install -y dotnet-sdk-$DOTNET_SDK_VERSION
-else
-  DOTNET_INSTALLED=$(dotnet --version)
-  if [[ "$DOTNET_INSTALLED" != $DOTNET_SDK_VERSION* ]]; then
-    info "Updating .NET SDK to net$DOTNET_SDK_VERSION"
-    apt-get install -y dotnet-sdk-$DOTNET_SDK_VERSION
-  else
-    info ".NET SDK $DOTNET_INSTALLED already installed"
-  fi
-fi
 
 info "🔐 Configuring UFW firewall rules..."
 
@@ -732,15 +517,55 @@ allow_if_not_exists() {
   fi
 }
 
+SQL_PORT_START=1435
+SQL_PORT_END=1535   # optional upper limit to prevent crazy high numbers
+
+find_free_port() {
+  local start=$1
+  local end=$2
+  local used_ports
+  used_ports=$(ss -lnt | awk '{print $4}' | grep -oE '[0-9]+$' | sort -n)
+
+  for ((p=start; p<=end; p++)); do
+    if ! echo "$used_ports" | grep -qx "$p"; then
+      echo "$p"
+      return 0
+    fi
+  done
+
+  return 1  # no free port found
+}
+
+SQL_STAGING_PORT=$(find_free_port $SQL_PORT_START $SQL_PORT_END)
+if [[ -z "$SQL_STAGING_PORT" ]]; then
+  echo "❌ No free staging port available!"
+  exit 1
+fi
+
+SQL_PRODUCTION_PORT=$((SQL_STAGING_PORT + 1))
+if (( SQL_PRODUCTION_PORT >= SQL_PORT_START && SQL_PRODUCTION_PORT <= SQL_PORT_END )); then
+  if ss -lnt | awk '{print $4}' | grep -q ":$SQL_PRODUCTION_PORT$"; then
+    echo "❌ No free production port available!"
+    exit 1
+  fi
+else
+  echo "❌ Production port exceeds limit!"
+  exit 1
+fi
+
+echo "✅ Allocated ports:"
+echo "  Staging: $SQL_STAGING_PORT"
+echo "  Production: $SQL_PRODUCTION_PORT"
+
 # Allow rules only if not already present
 allow_if_not_exists "OpenSSH"
 allow_if_not_exists "Nginx Full"
-allow_if_not_exists "1433/tcp"
-allow_if_not_exists "1434/tcp"
+allow_if_not_exists "$SQL_STAGING_PORT/tcp"
+allow_if_not_exists "$SQL_PRODUCTION_PORT/tcp"
 
 info "💾 Writing environment variables to $ENV_FILE..."
 
-cat > "$ENV_FILE" <<EOF_ENV
+cat > "$ENV_FILE" <<'EOF_ENV'
 # Shared
 Smtp__Host="$SMTP_HOST"
 Smtp__Username="$SMTP_USERNAME"
@@ -748,19 +573,29 @@ Smtp__Password="$SMTP_PASSWORD"
 Smtp__From="$SMTP_FROM"
 Smtp__Port="$SMTP_PORT"
 
+# db names
+DB_NAME_PRODUCTION="${SAFE_PROJECT_NAME}_production"
+DB_NAME_STAGING="${SAFE_PROJECT_NAME}_staging"
+
+# sql server volumes
+SQLSERVERVOL_NAME_PRODUCTION="sqlserver_${SAFE_PROJECT_NAME}_production"
+SQLSERVERVOL_NAME_STAGING="sqlserver_${SAFE_PROJECT_NAME}_staging"
+
 # Production
-CONNECTION_STRING="Data Source=$VPS_IP,1434;Database=production_db;User ID=sa;Password=$PROD_PASS;Encrypt=True;Trust Server Certificate=True"
+CONNECTION_STRING="Data Source=$VPS_IP,$SQL_PRODUCTION_PORT;Database=$DB_NAME_PRODUCTION;User ID=sa;Password=$PROD_PASS;Encrypt=True;Trust Server Certificate=True"
 ADMIN_PASSWORD="$ADMIN_PASSWORD"
 PRODUCTION_URL_TARGET="$PRODUCTION_URL_TARGET"
 
 # Staging
-CONNECTION_STRING_STAGING="Data Source=$VPS_IP,1433;Database=staging_db;User ID=sa;Password=$STAGING_PASS;Encrypt=True;Trust Server Certificate=True"
+CONNECTION_STRING_STAGING="Data Source=$VPS_IP,$SQL_STAGING_PORT;Database=$DB_NAME_STAGING;User ID=sa;Password=$STAGING_PASS;Encrypt=True;Trust Server Certificate=True"
 ADMIN_PASSWORD_STAGING="$ADMIN_PASSWORD_STAGING"
 
 # Default runtime
 DOTNET_ENVIRONMENT="Production"
 ASPNETCORE_ENVIRONMENT="Production"
 EOF_ENV
+
+debug "SQL_STAGIN_PORT: $SQL_STAGING_PORT SQL_PRODUCTION_PORT: $SQL_PRODUCTION_PORT"
 
 chmod 600 "$ENV_FILE"
 chown root:root "$ENV_FILE"
@@ -782,39 +617,50 @@ systemctl daemon-reload
 # Source env file for current script run
 source "$ENV_FILE"
 
+SQL_PRODUCTION_CONTAINER="sqlserver_${SAFE_PROJECT_NAME}_production"
+SQL_STAGING_CONTAINER="sqlserver_${SAFE_PROJECT_NAME}_staging"
+
 # Run MSSQL Docker containers
 info "🐳 Starting MSSQL Docker containers..."
 
-if ! docker ps -q -f name=sqlserver_production | grep -q .; then
-  if docker ps -aq -f name=sqlserver_production | grep -q .; then
-    docker start sqlserver_production
+# checking if port is in use
+for p in $SQL_STAGING_PORT $SQL_PRODUCTION_PORT; do
+  if ss -lnt | awk '{print $4}' | grep -q ":$p$"; then
+    error "Port $p already in use"
+    exit 1
+  fi
+done
+
+if ! docker ps -q -f name=$SQL_PRODUCTION_CONTAINER | grep -q .; then
+  if docker ps -aq -f name=$SQL_PRODUCTION_CONTAINER | grep -q .; then
+    docker start $SQL_PRODUCTION_CONTAINER
   else
-    docker run -d --name sqlserver_production \
+    docker run -d --name $SQL_PRODUCTION_CONTAINER \
       -e 'ACCEPT_EULA=Y' -e "MSSQL_SA_PASSWORD=$PROD_PASS" \
-      -e 'MSSQL_PID=Express' -v sqlservervol_production:/var/opt/mssql \
-      -p 1434:1433 --restart=always \
+      -e 'MSSQL_PID=Express' -v $SQLSERVERVOL_NAME_PRODUCTION:/var/opt/mssql \
+      -p $SQL_PRODUCTION_PORT:1433 --restart=always \
       mcr.microsoft.com/mssql/server:2019-latest || true
   fi
 else
-  info "sqlserver_production container is already running."
+  info "$SQL_PRODUCTION_CONTAINER container is already running."
 fi
 
-if ! docker ps -q -f name=sqlserver_staging | grep -q .; then
-  if docker ps -aq -f name=sqlserver_staging | grep -q .; then
-    docker start sqlserver_staging
+if ! docker ps -q -f name=$SQL_STAGING_CONTAINER | grep -q .; then
+  if docker ps -aq -f name=$SQL_STAGING_CONTAINER | grep -q .; then
+    docker start $SQL_STAGING_CONTAINER
   else
-    docker run -d --name sqlserver_staging \
+    docker run -d --name $SQL_STAGING_CONTAINER \
       -e 'ACCEPT_EULA=Y' -e "MSSQL_SA_PASSWORD=$STAGING_PASS" \
-      -e 'MSSQL_PID=Express' -v sqlservervol_staging:/var/opt/mssql \
-      -p 1433:1433 --restart=always \
+      -e 'MSSQL_PID=Express' -v $SQLSERVERVOL_NAME_STAGING:/var/opt/mssql \
+      -p $SQL_STAGING_PORT:1433 --restart=always \
       mcr.microsoft.com/mssql/server:2019-latest || true
   fi
 else
-  info "sqlserver_staging container is already running."
+  info "$SQL_STAGING_CONTAINER container is already running."
 fi
 
 info "🐳 Installing MSSQL Tools..."
-for c in sqlserver_production sqlserver_staging; do
+for c in SQL_PRODUCTION_CONTAINER SQL_STAGING_CONTAINER; do
   docker exec -u 0 "$c" bash -c '
     if ! command -v sqlcmd >/dev/null 2>&1; then
         echo "Installing mssql-tools in $HOSTNAME..."
@@ -841,7 +687,7 @@ done
 
 info "🔗 Ensuring sqlcmd is on PATH inside MSSQL containers..."
 
-for c in sqlserver_production sqlserver_staging; do
+for c in SQL_PRODUCTION_CONTAINER SQL_STAGING_CONTAINER; do
   info "➡️  Configuring $c"
 
   docker exec -u 0 "$c" bash -c '
@@ -872,8 +718,8 @@ declare -A SECRETS_BACKEND=(
   ["SMTP_PASSWORD"]="$SMTP_PASSWORD"
   ["SMTP_FROM"]="$SMTP_FROM"
   ["SMTP_PORT"]="$SMTP_PORT"
-  ["CONNECTION_STRING"]="Data Source=$VPS_IP,1434;Database=production_db;User ID=sa;Password=$PROD_PASS;Encrypt=True;Trust Server Certificate=True"
-  ["CONNECTION_STRING_STAGING"]="Data Source=$VPS_IP,1433;Database=staging_db;User ID=sa;Password=$STAGING_PASS;Encrypt=True;Trust Server Certificate=True"
+  ["CONNECTION_STRING"]="Data Source=$VPS_IP,$SQL_PRODUCTION_PORT;Database=$DB_NAME_PRODUCTION;User ID=sa;Password=$PROD_PASS;Encrypt=True;Trust Server Certificate=True"
+  ["CONNECTION_STRING_STAGING"]="Data Source=$VPS_IP,$SQL_STAGING_PORT;Database=$DB_NAME_STAGING;User ID=sa;Password=$STAGING_PASS;Encrypt=True;Trust Server Certificate=True"
   ["ADMIN_PASSWORD"]="$ADMIN_PASSWORD"
   ["ADMIN_PASSWORD_STAGING"]="$ADMIN_PASSWORD_STAGING"
 )
@@ -976,22 +822,21 @@ for APP_LABEL in frontend backend; do
 
     # Skip if already configured
     if [[ -f config.sh ]] && [[ -f .runner ]]; then
-      warn "Runner already configured at $DIR. Restarting service if needed..."
+      warn "Runner already configured at $DIR."
 
-      SERVICE_NAME="actions.runner.${REPO_OWNER}-${REPO_NAME//\//.}.${APP_LABEL}-${ENV}.service"
-      SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
-
+      SERVICE_PATH="/etc/systemd/system/actions.runner.${REPO_OWNER}-${REPO_NAME//\//.}.${APP_LABEL}-${ENV}.service"
       if [[ ! -f "$SERVICE_PATH" ]]; then
-        warn "Missing service file. Reinstalling..."
-        ./svc.sh install
-        systemctl daemon-reexec
-        systemctl start "$SERVICE_NAME"
+          ./svc.sh install
+          systemctl daemon-reexec
+          systemctl start "$SERVICE_PATH"
       else
-        info "🔄 Restarting runner service: $SERVICE_NAME"
-        systemctl daemon-reexec
-        systemctl restart "$SERVICE_NAME"
+          info "🔄 Service $SERVICE_PATH already exists, restarting..."
+          systemctl daemon-reexec
+          systemctl restart "$SERVICE_PATH"
       fi
+
       continue
+
     fi
 
     info "⬇️ Downloading GitHub Actions runner..."
@@ -1041,7 +886,7 @@ for ENV in production staging; do
   REPO_NAME="$REPO_NAME_1"
   RUNNER_WORK_DIR="/opt/actions-runners/frontend-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
   DIST_DIR="${RUNNER_WORK_DIR}/dist"
-  TARGET_DIR="/opt/apps/frontend-${ENV}"
+  TARGET_DIR="/opt/apps/$API_BASE_PATH/$PROFILE_NAME/$REPO_NAME_1-${ENV}"
 
   info "Checking build folder for frontend-${ENV}..."
 
@@ -1121,7 +966,7 @@ done
 
 info "💾 Saving PM2 process list so 'pm2 resurrect' can work later"
 
-pm2 startup systemd
+pm2 startup systemd -u root --hp /root || true
 pm2 save --update-env
 
 info "🚀 Running a Github Action Workflow"
@@ -1162,17 +1007,10 @@ done
 
 success "Workflows done!"
 
-info "🔧 Starting Nginx + Certbot setup"
+info "🔧 Starting Nginx setup"
 
-set -euo pipefail
-
+BASE_APP_DIR="/opt/apps/$API_BASE_PATH"
 # Domains mapping
-declare -A REPO_ENV_PATHS=(
-  ["frontend-production"]="/opt/apps/frontend-production"
-  ["frontend-staging"]="/opt/apps/frontend-staging"
-  ["backend-production"]="backend"
-  ["backend-staging"]="backend"
-)
 
 declare -A BACKEND_PORTS=(
   ["backend-production"]=5002
@@ -1186,28 +1024,11 @@ declare -A DOMAIN_MAP=(
   ["backend-staging"]="admin-staging.$BASE_DOMAIN"
 )
 
-# 1. Clean up old configs and certs
-rm -rf /etc/nginx/sites-enabled/*
-rm -rf /etc/nginx/sites-available/*
-rm -rf /etc/letsencrypt/live/*
-rm -rf /etc/letsencrypt/archive/*
-rm -rf /etc/letsencrypt/renewal/*
-rm -f /etc/letsencrypt/options-ssl-nginx.conf /etc/letsencrypt/ssl-dhparams.pem
-
-# 2. Install packages
-apt update
-apt install -y nginx certbot python3-certbot-nginx
-systemctl enable nginx
-systemctl start nginx
-
-# 3. Generate HTTP-only Nginx configs
-for env in "${!REPO_ENV_PATHS[@]}"; do
+info "Generate HTTP-only Nginx configs"
+for env in frontend-production frontend-staging backend-production backend-staging; do
   domain="${DOMAIN_MAP[$env]}"
   config_name="$(echo "$env" | tr '_' '-')"
   config_path="/etc/nginx/sites-available/$config_name"
-  path="${REPO_ENV_PATHS[$env]}"
-  is_backend=false
-  [[ "$path" == "backend" ]] && is_backend=true
 
   cat > "$config_path" <<EOF
 server {
@@ -1215,26 +1036,23 @@ server {
     server_name $domain www.$domain;
 EOF
 
-  if $is_backend; then
+  if [[ "$env" == backend-* ]]; then
     port="${BACKEND_PORTS[$env]}"
     cat >> "$config_path" <<EOF
     location / {
         proxy_pass http://localhost:$port;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection keep-alive;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_cache_bypass \$http_upgrade;
     }
 EOF
   else
     cat >> "$config_path" <<EOF
-    root $path;
-    index index.html;
-    location / {
-        try_files \$uri /index.html;
+    location /$API_BASE_PATH/$PROFILE_NAME/ {
+        alias /opt/apps/$API_BASE_PATH/$PROFILE_NAME/$REPO_NAME_1-production/;
+        index index.html;
+        try_files \$uri \$uri/ index.html;
     }
 EOF
   fi
@@ -1243,7 +1061,7 @@ EOF
   ln -sf "$config_path" "/etc/nginx/sites-enabled/$config_name"
 done
 
-info "🔄4. Testing Nginx configuration and reloading..."
+info "🔄 Testing Nginx configuration and reloading..."
 NGINX_OUTPUT=$(nginx -t 2>&1)
 if [[ $? -eq 0 ]]; then
     success "$NGINX_OUTPUT"
@@ -1252,35 +1070,6 @@ else
     error "$NGINX_OUTPUT"
     exit 1
 fi
-
-# 5. Run certbot with nginx plugin to install certs and enable HTTPS if needed
-if [[ "$certbot_args" != "SKIP_CERTBOT" ]]; then
-    info "➡️ Running certbot with args: [$certbot_args]"
-    for env in "${!DOMAIN_MAP[@]}"; do
-        domain="${DOMAIN_MAP[$env]}"
-        cert_name="${domain//./_}"
-        primary_domain="$domain"
-        www_domain="www.$domain"
-
-        info "🔍 Checking if certificate for $domain already exists..."
-
-        if certbot certificates --cert-name "$cert_name" 2>&1 | grep -q "Certificate Name: $cert_name"; then
-            info "✅ Certificate for [$domain] already exists, skipping issuance."
-        else
-            info "🔐 Issuing new certificate for [$domain] and [$www_domain]..."
-            certbot --nginx --non-interactive $certbot_args --agree-tos --redirect \
-                --email "$SSL_EMAIL" -d "$primary_domain" -d "$www_domain" --cert-name "$cert_name"
-            success "Certificate successfully created for [$domain]"
-            sleep 10
-        fi
-    done
-else
-    info "⏭️ Skipping Certbot inside heredoc (dummy arg detected)"
-fi
-
-
-success "SSL setup complete for all environments."
-echo
 
 info "🔑 Summary of environment variables (keep these safe):"
 echo
@@ -1306,7 +1095,7 @@ info "  STAGING_PASS: \033[1;31m$STAGING_PASS\033[0m"
 info "  PROD_PASS:    \033[1;31m$PROD_PASS\033[0m"
 
 echo
-success "VPS Setup is complete!"
+success "App Setup is complete!"
 
 EOF_SCRIPT
 }
@@ -1315,7 +1104,7 @@ EOF_SCRIPT
 # === 1. Select Project from previous templates ===
 select_backup_config() {
     shopt -s nullglob
-    local configs=("$CONFIG_DIR"/*.env)
+    local configs=("$APPS_CONFIG_DIR"/*.env)
     shopt -u nullglob
 
     if [[ ${#configs[@]} -eq 0 ]]; then
@@ -1709,11 +1498,11 @@ backup_project_assets() {
   fi
 }
 
-exit_program() { info "Exiting program."; exit 0;}
+exit_program() {  info "Exiting program."; exit 0; }
 
 # === Header Menu UI ===
 print_header() {
-    local text="===== ZigiProjectManager >> VPS Setup Wizard ====="
+    local text="===== ZigiProjectManager >> App Setup Wizard ====="
     local colors=("\033[1;31m" "\033[1;33m" "\033[1;32m" "\033[1;36m" "\033[1;34m" "\033[1;35m")
     local reset="\033[0m"
     local len=${#text}
@@ -1728,7 +1517,7 @@ print_header() {
 
 # === Menu Items ===
 options=("Create new config" "Load existing config" "Remove existing config" \
-         "Manage SMTP Profiles" "Backup Project Assets" $'\033[1;33mReturn to Menu\033[0m')
+"Backup Project Assets" $'\033[1;33mReturn to Menu\033[0m')
 
 # === Main Menu Loop ===
 while true; do
@@ -1742,9 +1531,8 @@ while true; do
             1) create_new_profile ;;
             2) load_profile ;;
             3) remove_profile ;;
-            4) manage_smtp_profiles ;;
-            5) backup_project_assets ;;
-            6) exit_program ;;
+            4) backup_project_assets ;;
+            5) exit_program ;;
             *) warn "Invalid option, choose 1-${#options[@]}" ;;
         esac
         break

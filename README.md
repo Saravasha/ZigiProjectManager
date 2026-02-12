@@ -31,6 +31,10 @@ Before running the scripts, you **must configure A records** in your DNS dashboa
 2.  Add the A records above pointing to your **VPS public IP**.
 3.  Wait for DNS propagation (typically a few minutes to a few hours).
 4.  Verify DNS resolution:
+5.  Clone the project and cd into the project directory and run ./start.sh
+6.  Clone the Website Template for a new Project.
+7.  Setup your VPS for your Domain Website Project.
+8.  Add extra projects to the Domain Website's route path with setup-app.sh AND OR manage projects with multi-committer
 
 ```bash
    dig +short www.<your-base-domain>

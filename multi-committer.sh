@@ -1,12 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# --- Default settings ---
+DEBUG=false
+DEBUG_VERBOSE=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --debug)
+            DEBUG=true
+            shift
+            ;;
+        --debug-verbose)
+            DEBUG=true
+            DEBUG_VERBOSE=true
+            set -x  # enable full shell tracing
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [--debug] [--debug-verbose]"
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $1"
+            exit 1
+            ;;
+    esac
+done
+
 # === Colored Output Functions ===
 info()    { echo -e "\033[1;34m[INFO]:🔍 $*\033[0m"; }
 warn()    { echo -e "\033[1;33m[WARN]:⚠️ $*\033[0m"; }
 error()   { echo -e "\033[1;31m[ERROR]:❌ $*\033[0m"; }
 success() { echo -e "\033[1;32m[SUCCESS]:✅ $*\033[0m"; }
-debug()   { echo -e "\033[38;5;208m[DEBUG]:⚙️ $*\033[0m"; }
+debug() {
+  if [[ "$DEBUG" == true && "$DEBUG_VERBOSE" == false ]]; then
+    echo -e "\033[38;5;208m[DEBUG]:⚙️ $*\033[0m"
+  fi
+}
 
 # === Config Management ===
 CONFIG_FILE="$HOME/.multi-committer.cfg"
@@ -357,7 +388,7 @@ exit_program() { info "Exiting program."; exit 0; }
 load_config
 # === Header Menu UI ===
 print_header() {
-    local text="===== Multi-Comitter Wizard ====="
+    local text="===== ZigiProjectManager >>  Multi-Committer Wizard ====="
     local colors=("\033[1;31m" "\033[1;33m" "\033[1;32m" "\033[1;36m" "\033[1;34m" "\033[1;35m")
     local reset="\033[0m"
     local len=${#text}
@@ -371,11 +402,12 @@ print_header() {
 }
 
 # === Menu Items ===
-options=("Set current working repo" "Select target repositories" "Rsync dry run (preview sync)" "Rsync apply changes" "Commit all changes locally" "Push all commits to remote" "Exit")
+options=("Set current working repo" "Select target repositories" "Rsync dry run (preview sync)" "Rsync apply changes" "Commit all changes locally" "Push all commits to remote" $'\033[1;33mReturn to Menu\033[0m')
 
 # === Main Menu Loop ===
 while true; do
     print_header
+    debug "Debug mode engaged!"
 
     PS3="Choose an option: "
     set +u

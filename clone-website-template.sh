@@ -1,12 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# --- Default settings ---
+DEBUG=false
+DEBUG_VERBOSE=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --debug)
+            DEBUG=true
+            shift
+            ;;
+        --debug-verbose)
+            DEBUG=true
+            DEBUG_VERBOSE=true
+            set -x  # enable full shell tracing
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [--debug] [--debug-verbose]"
+            exit 0
+            ;;
+        *)
+            echo "Unknown argument: $1"
+            exit 1
+            ;;
+    esac
+done
+
 # === Colored Output Functions ===
 info()    { echo -e "\033[1;34m[INFO]:🔍 $*\033[0m"; }
 warn()    { echo -e "\033[1;33m[WARN]:⚠️ $*\033[0m"; }
 error()   { echo -e "\033[1;31m[ERROR]:❌ $*\033[0m"; }
 success() { echo -e "\033[1;32m[SUCCESS]:✅ $*\033[0m"; }
-debug()   { echo -e "\033[38;5;208m[DEBUG]:⚙️ $*\033[0m"; }
+debug() {
+  if [[ "$DEBUG" == true && "$DEBUG_VERBOSE" == false ]]; then
+    echo -e "\033[38;5;208m[DEBUG]:⚙️ $*\033[0m"
+  fi
+}
 
 # === Global Paths & Constants ===
 SCRIPT_PARENT_DIR="$(pwd)/../"
@@ -32,7 +63,6 @@ install_tools() {
     fi
 }
 
-
 install_dotnet() {
     if ! command -v dotnet &>/dev/null; then
         warn "⚡ .NET SDK not found, installing..."
@@ -56,197 +86,6 @@ normalize_api_path() {
     path=$(echo "$path" | tr '[:upper:]' '[:lower:]')
     echo "$path"
 }
-
-# === Profile Management ===
-create_new_profile() {
-
-    read -rp "📦 Project name: " PROJECT_NAME
-    PROJECT_SLUG="${PROJECT_NAME}"
-
-    local profile_path="$PROFILE_DIR/$PROJECT_NAME.json"
-    if [[ -f "$profile_path" ]]; then
-        error "Profile '$PROJECT_NAME' already exists."
-        return 1
-    fi
-
-    read -rp "🏢 GitHub Username (Saravasha): " REPO_OWNER
-    read -rp "📧 GitHub Email (example@gmail.com): " EMAIL
-    read -rsp "🔑 GitHub PAT: " GITHUB_PAT; echo
-
-    read -rp "🏢 Use GitHub Org? (y/n): " USE_ORG
-    if [[ "$USE_ORG" =~ ^[Yy]$ ]]; then
-        read -rp "🏢 Org name: " GITHUB_ORG
-    else
-        GITHUB_ORG=""
-    fi
-
-    read -rp "Profile Type - Enter choice [1) Domain, 2) App]: " PROFILE_TYPE_CHOICE
-
-    if [[ "$PROFILE_TYPE_CHOICE" == "1" ]]; then
-        PROFILE_TYPE="domain"
-
-        read -rp "🌐 Domain name (example.com): " DOMAIN_NAME
-
-        FRONTEND_NAME="${PROJECT_NAME}-frontend"
-        BACKEND_NAME="${PROJECT_NAME}-backend"
-
-        jq -n \
-          --arg project_name "$PROJECT_NAME" \
-          --arg domain "$DOMAIN_NAME" \
-          --arg frontend "$FRONTEND_NAME" \
-          --arg backend "$BACKEND_NAME" \
-          --arg github_pat "$GITHUB_PAT" \
-          --arg github_org "$GITHUB_ORG" \
-          --arg repo_owner "$REPO_OWNER" \
-          --arg email "$EMAIL" \
-          --arg profile_type "$PROFILE_TYPE" \
-          '{
-            project_name: $project_name,
-            domain: $domain,
-            frontend: $frontend,
-            backend: $backend,
-            parent_project: "",
-            api_base_path: "",
-            github_pat: $github_pat,
-            github_org: $github_org,
-            repo_owner: $repo_owner,
-            email: $email,
-            profile_type: $profile_type,
-            runtimes: {}
-          }' > "$profile_path"
-
-    elif [[ "$PROFILE_TYPE_CHOICE" == "2" ]]; then
-        PROFILE_TYPE="apps"
-
-        info "📂 Select parent domain project:"
-        select parent_profile in "$PROFILE_DIR"/*.json; do
-            [[ -n "$parent_profile" ]] || { warn "Invalid selection"; continue; }
-            PARENT_PROJECT="$(jq -r .project_name "$parent_profile")"
-            PARENT_DOMAIN="$(jq -r .domain "$parent_profile")"
-            break
-        done
-
-        FRONTEND_NAME="${PROJECT_NAME}-frontend"
-        BACKEND_NAME="${PROJECT_NAME}-backend"
-        API_BASE_PATH="/apps/$PROJECT_SLUG"
-
-        jq -n \
-          --arg project_name "$PROJECT_NAME" \
-          --arg parent_project "$PARENT_PROJECT" \
-          --arg api_base_path "$API_BASE_PATH" \
-          --arg frontend "$FRONTEND_NAME" \
-          --arg backend "$BACKEND_NAME" \
-          --arg github_pat "$GITHUB_PAT" \
-          --arg github_org "$GITHUB_ORG" \
-          --arg repo_owner "$REPO_OWNER" \
-          --arg email "$EMAIL" \
-          --arg profile_type "$PROFILE_TYPE" \
-          '{
-            project_name: $project_name,
-            domain: "",
-            frontend: $frontend,
-            backend: $backend,
-            parent_project: $parent_project,
-            api_base_path: $api_base_path,
-            github_pat: $github_pat,
-            github_org: $github_org,
-            repo_owner: $repo_owner,
-            email: $email,
-            profile_type: $profile_type,
-            runtimes: {}
-          }' > "$profile_path"
-
-    else
-        error "Invalid selection."
-        return 1
-    fi
-
-    chmod 600 "$profile_path"
-    success "Profile saved: $profile_path"
-}
-
-create_routed_app() {
-    require_profile || return 1
-
-    [[ "$profile_type" == "apps" && -z "$parent_project" ]] && {
-        read -rp "Enter parent project for routed app '$project_name': " parent_project
-        info "✅ parent_project set to '$parent_project'"
-    }
-
-    # Ensure parent is a domain profile
-    if [[ "$PROFILE_TYPE" != "domain" ]]; then
-        error "Routed apps can only be added under a domain profile."
-        return 1
-    fi
-
-    read -rp "📦 App name: " APP_NAME
-    FRONTEND_NAME="${PROJECT_NAME}-${APP_NAME}-frontend"
-    BACKEND_NAME="${PROJECT_NAME}-${APP_NAME}-backend"
-    API_BASE_PATH="/apps/$APP_NAME"
-    API_BASE_PATH=$(normalize_api_path "$API_BASE_PATH")
-
-    APP_PROFILE="$PROFILE_DIR/$APP_NAME.json"
-    if [[ -f "$APP_PROFILE" ]]; then
-        error "Profile for app '$APP_NAME' already exists."
-        return 1
-    fi
-
-    jq -n \
-    --arg project_name "$APP_NAME" \
-    --arg frontend "$FRONTEND_NAME" \
-    --arg backend "$BACKEND_NAME" \
-    --arg parent_project "$PROJECT_NAME" \
-    --arg api_base_path "$API_BASE_PATH" \
-    --arg github_pat "$GITHUB_PAT" \
-    --arg github_org "$GITHUB_ORG" \
-    --arg repo_owner "$REPO_OWNER" \
-    --arg email "$EMAIL" \
-    --arg profile_type "apps" \
-    '{
-        project_name: $project_name,
-        frontend: $frontend,
-        backend: $backend,
-        parent_project: $parent_project,
-        api_base_path: $api_base_path,
-        github_pat: $github_pat,
-        github_org: $github_org,
-        repo_owner: $repo_owner,
-        email: $email,
-        profile_type: $profile_type,
-        runtimes: {}
-    }' > "$APP_PROFILE"
-
-    chmod 600 "$APP_PROFILE"
-    success "Routed app profile saved: $APP_PROFILE"
-}
-
-remove_profile() {
-    local profiles=("$PROFILE_DIR"/*.json)
-    [[ ${#profiles[@]} -eq 0 ]] && { error "No profiles to remove."; return; }
-
-    # Add a "Cancel" option at the end
-    local options=("${profiles[@]}" "❌ Cancel")
-
-    info "📁 Select a profile to remove:"
-    select profile_file in "${options[@]}"; do
-        if [[ "$profile_file" == "❌ Cancel" ]]; then
-            info "Cancelled profile removal."
-            break
-        elif [[ -n "$profile_file" ]]; then
-            read -rp "Delete '$profile_file'? (y/n): " confirm
-            if [[ "$confirm" =~ ^[Yy]$ ]]; then
-                rm -f "$profile_file"
-                success "Removed $profile_file"
-            else
-                info "Cancelled"
-            fi
-            break
-        else
-            warn "Invalid selection, try again."
-        fi
-    done
-}
-
 
 normalize_profile() {
     local profile_file="$1"
@@ -279,7 +118,7 @@ normalize_profile() {
     }
 
     [[ "$profile_type" == "apps" && -z "$api_base_path" ]] && {
-        api_base_path="/apps/$project_name"
+        api_base_path="/myapps/$project_name"
         info "🔗 Adding missing api_base_path to $project_name"
     }
 
@@ -325,21 +164,198 @@ normalize_profile() {
     chmod 600 "$profile_file"
 }
 
-use_profile() {
-    local profiles=("$PROFILE_DIR"/*.json)
-    [[ ${#profiles[@]} -eq 0 ]] && { error "No profiles found."; return; }
 
-    # Add a "Cancel" option at the end
-    local options=("${profiles[@]}" "❌ Cancel")
+# === Profile Management ===
+create_new_profile() {
+
+    read -rp "📦 Project name: " PROJECT_NAME
+    PROJECT_SLUG="${PROJECT_NAME}"
+
+    local profile_path="$PROFILE_DIR/$PROJECT_NAME.json"
+    
+    if [[ -f "$profile_path" ]]; then
+        error "Profile '$PROJECT_NAME' already exists."
+        return 1
+    fi
+
+    read -rp "🏢 GitHub Username (Saravasha): " REPO_OWNER
+    read -rp "📧 GitHub Email (example@gmail.com): " EMAIL
+    read -rsp "🔑 GitHub PAT: " GITHUB_PAT; echo
+
+    read -rp "🏢 Use GitHub Org? (y/n): " USE_ORG
+    if [[ "$USE_ORG" =~ ^[Yy]$ ]]; then
+        read -rp "🏢 Org name: " GITHUB_ORG
+    else
+        GITHUB_ORG=""
+    fi
+
+    # By default, every new profile is a domain-level app
+    PROFILE_TYPE="domain"
+    read -rp "🌐 Domain name (example.com): " DOMAIN_NAME
+
+    FRONTEND_NAME="${PROJECT_NAME}-frontend"
+    BACKEND_NAME="${PROJECT_NAME}-backend"
+
+    jq -n \
+      --arg project_name "$PROJECT_NAME" \
+      --arg domain "$DOMAIN_NAME" \
+      --arg frontend "$FRONTEND_NAME" \
+      --arg backend "$BACKEND_NAME" \
+      --arg github_pat "$GITHUB_PAT" \
+      --arg github_org "$GITHUB_ORG" \
+      --arg repo_owner "$REPO_OWNER" \
+      --arg email "$EMAIL" \
+      --arg profile_type "$PROFILE_TYPE" \
+      '{
+        project_name: $project_name,
+        domain: $domain,
+        frontend: $frontend,
+        backend: $backend,
+        parent_project: "",
+        api_base_path: "",
+        github_pat: $github_pat,
+        github_org: $github_org,
+        repo_owner: $repo_owner,
+        email: $email,
+        profile_type: $profile_type,
+        runtimes: {}
+      }' > "$profile_path"
+
+    chmod 600 "$profile_path"
+    success "Profile saved: $profile_path"
+}
+
+
+create_routed_app() {
+
+    info "Create Routed App"
+    require_profile || return 1
+
+    [[ "$profile_type" == "apps" && -z "$parent_project" ]] && {
+        read -rp "Enter parent project for routed app '$project_name': " parent_project
+        info "✅ parent_project set to '$parent_project'"
+    }
+
+    # Ensure parent is a domain profile
+    if [[ "$PROFILE_TYPE" != "domain" ]]; then
+        error "Routed apps can only be added under a domain profile."
+        return 1
+    fi
+
+    read -rp "📦 App name: " APP_NAME
+    FRONTEND_NAME="${PROJECT_NAME}-${APP_NAME}-frontend"
+    BACKEND_NAME="${PROJECT_NAME}-${APP_NAME}-backend"
+    API_BASE_PATH="/myapps/$APP_NAME"
+    API_BASE_PATH=$(normalize_api_path "$API_BASE_PATH")
+
+    shopt -s nullglob
+    APP_PROFILE="$PROFILE_DIR/$APP_NAME.json"
+    shopt -u nullglob
+    if [[ -f "$APP_PROFILE" ]]; then
+        error "Profile for app '$APP_NAME' already exists."
+        return 1
+    fi
+
+    jq -n \
+    --arg project_name "$APP_NAME" \
+    --arg frontend "$FRONTEND_NAME" \
+    --arg backend "$BACKEND_NAME" \
+    --arg parent_project "$PROJECT_NAME" \
+    --arg api_base_path "$API_BASE_PATH" \
+    --arg github_pat "$GITHUB_PAT" \
+    --arg github_org "$GITHUB_ORG" \
+    --arg repo_owner "$REPO_OWNER" \
+    --arg email "$EMAIL" \
+    --arg profile_type "apps" \
+    '{
+        project_name: $project_name,
+        frontend: $frontend,
+        backend: $backend,
+        parent_project: $parent_project,
+        api_base_path: $api_base_path,
+        github_pat: $github_pat,
+        github_org: $github_org,
+        repo_owner: $repo_owner,
+        email: $email,
+        profile_type: $profile_type,
+        runtimes: {}
+    }' > "$APP_PROFILE"
+
+    chmod 600 "$APP_PROFILE"
+    success "Routed app profile saved: $APP_PROFILE"
+}
+
+build_profile_menu() {
 
     info "📁 Available profiles:"
-    select profile_file in "${options[@]}"; do
-        if [[ "$profile_file" == "❌ Cancel" ]]; then
+
+    shopt -s nullglob
+    local files=("$PROFILE_DIR"/*.json)
+    shopt -u nullglob
+
+    PROFILE_OPTIONS=()
+    PROFILE_FILES=()
+
+    [[ ${#files[@]} -eq 0 ]] && return 1
+
+    for file in "${files[@]}"; do
+        parent=$(jq -r '.parent_project // empty' "$file")
+        name=$(jq -r '.project_name // empty' "$file")
+        [[ -z "$name" ]] && name="$(basename "$file" .json)"
+
+        if [[ -z "$parent" || "$parent" == "null" ]]; then
+            PROFILE_OPTIONS+=($'\e[33m'"$name  (parent)"$'\e[0m')
+        else
+            PROFILE_OPTIONS+=($'\e[32m'"$name  (parent: $parent)"$'\e[0m')
+        fi
+
+        PROFILE_FILES+=("$file")
+    done
+
+    PROFILE_OPTIONS+=("❌ Cancel")
+}
+
+
+remove_profile() {
+    warn "📁 Remove a profile:"
+
+    build_profile_menu || { error "No profiles to remove."; return; }
+
+    select choice in "${PROFILE_OPTIONS[@]}"; do
+        if [[ "$choice" == "❌ Cancel" ]]; then
+            info "Cancelled profile removal."
+            return
+        elif [[ -n "$choice" ]]; then
+            local file="${PROFILE_FILES[$((REPLY - 1))]}"
+            local name="$(basename "$file")"
+
+            read -rp "Delete '$name'? (y/n): " confirm
+            if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                rm -f "$file"
+                success "Removed $name"
+            else
+                info "Cancelled"
+            fi
+            break
+        else
+            warn "Invalid selection, try again."
+        fi
+    done
+}
+
+use_profile() {
+    info "Select an existing profile"
+
+    build_profile_menu || { error "No profiles found."; return; }
+
+    
+    select choice in "${PROFILE_OPTIONS[@]}"; do
+        if [[ "$choice" == "❌ Cancel" ]]; then
             info "Cancelled profile selection."
             return
-        elif [[ -n "$profile_file" ]]; then
-            PROFILE_JSON="$profile_file"
-            # Automatically normalize
+        elif [[ -n "$choice" ]]; then
+            PROFILE_JSON="${PROFILE_FILES[$((REPLY - 1))]}"
+
             normalize_profile "$PROFILE_JSON"
 
             PROJECT_NAME=$(jq -r .project_name "$PROFILE_JSON")
@@ -407,7 +423,7 @@ init_frontend_repo() {
     
     # If this is a routed app, use api_base_path from profile
     if [[ "$PROFILE_TYPE" == "apps" ]]; then
-        API_BASE_PATH=$(jq -r '.api_base_path // "/apps/'"$PROJECT_NAME"'"' "$PROFILE_JSON")
+        API_BASE_PATH=$(jq -r '.api_base_path // "/myapps/'"$PROJECT_NAME"'"' "$PROFILE_JSON")
         DEPLOY_PROJECT_NAME="$(jq -r .parent_project "$PROFILE_JSON")"
         # Determine parent project domain
         local parent_profile="$PROFILE_DIR/$(jq -r .parent_project "$PROFILE_JSON").json"
@@ -429,6 +445,9 @@ init_frontend_repo() {
     [[ -z "$STAGING_DEPLOY_PATH" ]] && error "Staging deploy path is empty"
     [[ -z "$PRODUCTION_DEPLOY_PATH" ]] && error "Production deploy path is empty"
     
+    local frontend_path="$PROJECT_DIR/$FRONTEND_NAME"
+    cd "$frontend_path" || exit 1
+
     # change workflow file paths
     for file in .github/workflows/*.yml; do
         [[ -f "$file" ]] || continue
@@ -442,8 +461,6 @@ init_frontend_repo() {
             "$file"
     done
 
-    local frontend_path="$PROJECT_DIR/$FRONTEND_NAME"
-    cd "$frontend_path" || exit 1
 
     # Prepare token replacements
     local sed_safe_domain
@@ -507,7 +524,7 @@ init_backend_repo() {
     local DOMAIN_NAME=""
 
     if [[ "$PROFILE_TYPE" == "apps" ]]; then
-        API_BASE_PATH=$(jq -r '.api_base_path // "/apps/'"$PROJECT_NAME"'"' "$PROFILE_JSON")
+        API_BASE_PATH=$(jq -r '.api_base_path // "/myapps/'"$PROJECT_NAME"'"' "$PROFILE_JSON")
         DEPLOY_PROJECT_NAME="$(jq -r .parent_project "$PROFILE_JSON")"
         DEPLOY_PROJECT_NAME="${DEPLOY_PROJECT_NAME}"
 
@@ -769,7 +786,7 @@ exit_program() { info "Exiting program."; exit 0; }
 
 # === Header Menu UI ===
 print_header() {
-    local text="===== Clone Website Wizard ====="
+    local text="===== ZigiProjectManager >> Clone Website Wizard ====="
     local colors=("\033[1;31m" "\033[1;33m" "\033[1;32m" "\033[1;36m" "\033[1;34m" "\033[1;35m")
     local reset="\033[0m"
     local len=${#text}
@@ -782,11 +799,12 @@ print_header() {
     printf "\n"
 }
 # === Menu Items ===
-options=("Create new profile" "Remove a profile" "Use existing profile" "Create Routed App" "Detect Runtimes" "Setup Project from Profile" "Exit")
+options=("Create new profile" "Remove a profile" "Use existing profile" "Create Routed App" "Detect Runtimes" "Setup Project from Profile" $'\033[1;33mReturn to Menu\033[0m')
 
 # === Main Menu Loop ===
 while true; do
     print_header
+    debug "Debug mode engaged!"
 
     PS3="Choose an option: "
     set +u
@@ -795,7 +813,7 @@ while true; do
             1) create_new_profile ;;
             2) remove_profile ;;
             3) use_profile ;;
-            4) require_profile && create_routed_app && use_profile && setup_routed_app ;;
+            4) require_profile && create_routed_app && setup_routed_app ;;
             5) require_profile && detect_runtimes ;;
             6) require_profile && setup_project ;;
             7) exit_program ;;
