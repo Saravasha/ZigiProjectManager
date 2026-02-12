@@ -782,7 +782,7 @@ setup_routed_app() {
     success "🎉 Routed app [$PROJECT_NAME] setup complete under parent [$DOMAIN_NAME]"
 }
 
-exit_program() { info "Exiting program."; exit 0; }
+return_to_menu() { info "Returning to Main Menu."; exit 0; }
 
 # === Header Menu UI ===
 print_header() {
@@ -816,7 +816,7 @@ while true; do
             4) require_profile && create_routed_app && setup_routed_app ;;
             5) require_profile && detect_runtimes ;;
             6) require_profile && setup_project ;;
-            7) exit_program ;;
+            7) return_to_menu ;;
             *) warn "Invalid choice" ;;
         esac
         break

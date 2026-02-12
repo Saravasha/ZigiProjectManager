@@ -1709,7 +1709,7 @@ backup_project_assets() {
   fi
 }
 
-exit_program() { info "Exiting program."; exit 0;}
+return_to_menu() { info "Returning to Main Menu."; exit 0; }
 
 # === Header Menu UI ===
 print_header() {
@@ -1744,7 +1744,7 @@ while true; do
             3) remove_profile ;;
             4) manage_smtp_profiles ;;
             5) backup_project_assets ;;
-            6) exit_program ;;
+            6) return_to_menu ;;
             *) warn "Invalid option, choose 1-${#options[@]}" ;;
         esac
         break

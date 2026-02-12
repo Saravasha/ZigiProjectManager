@@ -1498,7 +1498,7 @@ backup_project_assets() {
   fi
 }
 
-exit_program() {  info "Exiting program."; exit 0; }
+return_to_menu() { info "Returning to Main Menu."; exit 0; }
 
 # === Header Menu UI ===
 print_header() {
@@ -1532,7 +1532,7 @@ while true; do
             2) load_profile ;;
             3) remove_profile ;;
             4) backup_project_assets ;;
-            5) exit_program ;;
+            5) return_to_menu ;;
             *) warn "Invalid option, choose 1-${#options[@]}" ;;
         esac
         break
