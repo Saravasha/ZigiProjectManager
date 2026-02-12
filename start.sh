@@ -4,6 +4,8 @@ set -euo pipefail
 # --- Default settings ---
 DEBUG=false
 DEBUG_VERBOSE=false
+    args=()
+
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -49,20 +51,24 @@ debug() {
 
 
 clone_website_template() {
+    [[ "$DEBUG" == true ]] && args+=("--debug")
+    [[ "$DEBUG_VERBOSE" == true ]] && args+=("--debug-verbose")
 
     info "Running Project Cloning Service..."
     read -rp "Press Enter to continue..."
-    bash "./clone-website-template.sh"
+    bash "./clone-website-template.sh" "${args[@]}"
 
 }
 
 setup_vps() {
+    [[ "$DEBUG" == true ]] && args+=("--debug")
+    [[ "$DEBUG_VERBOSE" == true ]] && args+=("--debug-verbose")
 
     info "Running Setup a Domain VPS with Project Service..."
     warn "You must have already configured a template website (option 1) before using this service."
 
     if confirm "Are you sure?"; then
-        bash "./setup-vps.sh"
+        bash "./setup-vps.sh" "${args[@]}"
     else
         warn "Cancelled."
     fi
@@ -70,12 +76,14 @@ setup_vps() {
 }
 
 setup_app() {
+    [[ "$DEBUG" == true ]] && args+=("--debug")
+    [[ "$DEBUG_VERBOSE" == true ]] && args+=("--debug-verbose")
 
     info "Running Setup a Routed App on existing Domain VPS (Experimental)..."
     warn "You must have already configured a VPS with a working Domain site (option 2) before using this service."
     
     if confirm "Are you sure?"; then
-        bash "./setup-app.sh"
+        bash "./setup-app.sh" "${args[@]}"
     else
         warn "Cancelled."
     fi
@@ -83,12 +91,14 @@ setup_app() {
 }
 
 multi_committer() {
+    [[ "$DEBUG" == true ]] && args+=("--debug")
+    [[ "$DEBUG_VERBOSE" == true ]] && args+=("--debug-verbose")
 
     info "Running Project Manager..."
     warn "This service expects you to have multiple apps in your (organization OR user) to work with."
 
     if confirm "Are you sure?"; then
-        bash "./multi-committer.sh"
+        bash "./multi-committer.sh" "${args[@]}"
     else
         warn "Cancelled."
     fi

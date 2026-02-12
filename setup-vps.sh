@@ -197,14 +197,20 @@ main_config() {
     DOMAIN_BE_PROD="www.admin.${BASE_DOMAIN}"
     DOMAIN_BE_STAGING="www.admin-staging.${BASE_DOMAIN}"
     PRODUCTION_URL_TARGET="https://admin.${BASE_DOMAIN}/"
+    
+    PROJECT_NAME="${PROFILE_NAME}"
+    SAFE_PROJECT_NAME=$(echo "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]_-')
+
+    # db names
+    DB_NAME_PRODUCTION="${SAFE_PROJECT_NAME}_production"
+    DB_NAME_STAGING="${SAFE_PROJECT_NAME}_staging"
 
     read -s -p "🔐 Admin Password (Production): " ADMIN_PASSWORD; echo
     read -s -p "🔐 Admin Password (Staging): " ADMIN_PASSWORD_STAGING; echo
 
     # read -p "👤 GitHub Username or Org (case-sensitive): " REPO_OWNER
     
-
-    REP_OWNER=$(jq -r .github_org "$PROFILE_JSON") 
+    REPO_OWNER=$(jq -r .github_org "$PROFILE_JSON") 
     info "Skipping Github Username or Org from clone-website-template profile for $PROFILE_NAME, bypassing manual input"
 
     # read -p "🔐 Paste your GitHub PAT (starts with 'ghp_'): " GITHUB_PAT
@@ -261,8 +267,31 @@ main_config() {
         fi
     done
 
-# === Persist config ===
-cat > "$CONFIG_PATH" <<EOF
+        # --- Persist new config and oad the new config immediately ---
+        info "Persisting new config"
+        persist_config "$CONFIG_PATH"
+
+    else
+        success "📂 Loaded existing config from $CONFIG_PATH"
+        source "$CONFIG_PATH"
+
+        init_profile_state || return
+        CONFIG_LOADED=true
+    fi
+
+    # --- Proceed to VPS setup ---
+    if confirm "Do you want to continue to setting up the VPS with remote operations now?"; then
+        success "Proceeding with Setup VPS..."
+        setup_vps
+    else
+        info "⏩ Returning to Main Menu."
+    fi
+}
+
+persist_config() {
+    local path="$1"
+
+    cat > "$path" <<EOF
 KEY_NAME="$KEY_NAME"
 KEY_PATH="$KEY_PATH"
 PUB_KEY="$PUB_KEY"
@@ -283,6 +312,9 @@ REPO_NAME_1="$REPO_NAME_1"
 REPO_NAME_2="$REPO_NAME_2"
 GITHUB_PAT="$GITHUB_PAT"
 SSL_EMAIL="$SSL_EMAIL"
+DB_NAME_PRODUCTION="$DB_NAME_PRODUCTION"
+DB_NAME_STAGING="$DB_NAME_STAGING"
+SAFE_PROJECT_NAME="$SAFE_PROJECT_NAME"
 
 # clone-website profile reference
 PROFILE_NAME="$PROFILE_NAME"
@@ -295,23 +327,14 @@ SMTP_PASSWORD="$SMTP_PASSWORD"
 SMTP_FROM="$SMTP_FROM"
 SMTP_PORT="$SMTP_PORT"
 EOF
-
-        success "Config saved."
-    else
-        success "📂 Loaded existing config from $CONFIG_PATH"
-        source "$CONFIG_PATH"
-
-        init_profile_state || return
-        CONFIG_LOADED=true
-    fi
-
-    if confirm "Do you want to continue to setting up the VPS with remote operations now?"; then
-        success "Proceeding with Setup VPS..."
-        setup_vps
-    else
-        info "⏩ Returning to Main Menu."
-    fi
+   
+    # Load immediately
+    source "$path"
+    init_profile_state || return
+    CONFIG_LOADED=true
+    success "✅ Config saved and loaded: $path"
 }
+
 
 remove_profile() {
     info "🗑️ Remove a saved VPS config:"
@@ -524,16 +547,17 @@ setup_vps() {
     NODE_MAJOR="${NODE_VERSION%%.*}"
     DOTNET_SDK_VERSION="${DOTNET_VERSION#net}"
     
-    # debug "$NODE_MAJOR"
-    # debug "$DOTNET_SDK_VERSION"
+    debug "$NODE_MAJOR"
+    debug "$DOTNET_SDK_VERSION"
 
 # === Step 5: SSH and Setup ===
 ssh -t -i "$KEY_PATH" "$SSH_USER@$VPS_IP" sudo -E bash -s -- \
   "$VPS_IP" "$PROD_PASS" "$STAGING_PASS" "$ADMIN_PASSWORD" "$ADMIN_PASSWORD_STAGING" \
   "$PRODUCTION_URL_TARGET" "$REPO_OWNER" "$REPO_NAME_1" "$REPO_NAME_2" "$GITHUB_PAT" \
   "$SSL_EMAIL" "$BASE_DOMAIN" "$DOMAIN_FE_PROD" "$DOMAIN_FE_STAGING" "$DOMAIN_BE_PROD" "$DOMAIN_BE_STAGING" "$certbot_args" \
-  "$SMTP_HOST" "$SMTP_USERNAME" "$SMTP_PASSWORD" "$SMTP_FROM" "$SMTP_PORT" "$PROFILE_NAME" "$NODE_MAJOR" "$DOTNET_SDK_VERSION" \
-  "$DEBUG=" "$DEBUG_VERBOSE" <<'EOF_SCRIPT'
+  "$SMTP_HOST" "$SMTP_USERNAME" "$SMTP_PASSWORD" "$SMTP_FROM" "$SMTP_PORT" \ "$PROFILE_NAME" "$NODE_MAJOR" "$DOTNET_SDK_VERSION" \
+  "$DEBUG" "$DEBUG_VERBOSE" "$DB_NAME_PRODUCTION" "$DB_NAME_STAGING" \ "$SAFE_PROJECT_NAME" \
+ <<'EOF_SCRIPT'
 
 set -eu
 trap 'echo "❌ Setup failed at line $LINENO"; exit 1' ERR
@@ -570,8 +594,13 @@ NODE_MAJOR="${24:-}"
 DOTNET_SDK_VERSION="${25:-}"
 DEBUG="${26:-false}"
 DEBUG_VERBOSE="${27:-false}"
+DB_NAME_PRODUCTION="${28}"
+DB_NAME_STAGING="${29}"
+SAFE_PROJECT_NAME="${30}"
 
-# === re-implementing Colorized echo functions inside heredoc ===
+
+debug "re-implementing Colorized echo and helper functions inside heredoc"
+
 info()    { echo -e "\033[1;34m[INFO]:🔍 $*\033[0m"; }
 warn()    { echo -e "\033[1;33m[WARN]:⚠️ $*\033[0m"; }
 error()   { echo -e "\033[1;31m[ERROR]:❌ $*\033[0m"; }
@@ -582,14 +611,23 @@ debug() {
   fi
 }
 
-# Set environment file
+confirm() {
+    local r
+    read -rp "⏳ $1 (y/n): " r || return 1
+    [[ $r =~ ^[Yy]$ ]]
+}
+
+info "💡 We are on the remote machine now!"
+
+debug "Setting environment file"
+PROJECT_NAME="${PROFILE_NAME}"
 SAFE_REPO_OWNER=$(echo "$REPO_OWNER" | tr -cd '[:alnum:]_-')
 ENV_FILE="/etc/myapp_${SAFE_REPO_OWNER}-${PROFILE_NAME}.env"
 
 RUNNER_PREFIX="${SAFE_REPO_OWNER}-${PROFILE_NAME}"
 
 cleanup_old_runners() {
-    info "Cleaning up GitHub Actions runners for this child app only: $RUNNER_PREFIX"
+    info "Cleaning up GitHub Actions runners for this domain app only: $RUNNER_PREFIX"
 
     # Stop and remove systemd services that match this app only
     for SERVICE in /etc/systemd/system/actions.runner.${RUNNER_PREFIX}*.service; do
@@ -740,7 +778,7 @@ allow_if_not_exists "1434/tcp"
 
 info "💾 Writing environment variables to $ENV_FILE..."
 
-cat > "$ENV_FILE" <<EOF_ENV
+cat > "$ENV_FILE" <<'EOF_ENV'
 # Shared
 Smtp__Host="$SMTP_HOST"
 Smtp__Username="$SMTP_USERNAME"
@@ -748,13 +786,21 @@ Smtp__Password="$SMTP_PASSWORD"
 Smtp__From="$SMTP_FROM"
 Smtp__Port="$SMTP_PORT"
 
+# db names
+DB_NAME_PRODUCTION="$DB_NAME_PRODUCTION"
+DB_NAME_STAGING="$DB_NAME_STAGING"
+
+# sql server volumes
+SQLSERVERVOL_NAME_PRODUCTION="sqlserver_${SAFE_PROJECT_NAME}_production"
+SQLSERVERVOL_NAME_STAGING="sqlserver_${SAFE_PROJECT_NAME}_staging"
+
 # Production
-CONNECTION_STRING="Data Source=$VPS_IP,1434;Database=production_db;User ID=sa;Password=$PROD_PASS;Encrypt=True;Trust Server Certificate=True"
+CONNECTION_STRING="Data Source=$VPS_IP,1434;Database=$DB_NAME_PRODUCTION;User ID=sa;Password=$PROD_PASS;Encrypt=True;Trust Server Certificate=True"
 ADMIN_PASSWORD="$ADMIN_PASSWORD"
 PRODUCTION_URL_TARGET="$PRODUCTION_URL_TARGET"
 
 # Staging
-CONNECTION_STRING_STAGING="Data Source=$VPS_IP,1433;Database=staging_db;User ID=sa;Password=$STAGING_PASS;Encrypt=True;Trust Server Certificate=True"
+CONNECTION_STRING_STAGING="Data Source=$VPS_IP,1433;Database=$DB_NAME_STAGING;User ID=sa;Password=$STAGING_PASS;Encrypt=True;Trust Server Certificate=True"
 ADMIN_PASSWORD_STAGING="$ADMIN_PASSWORD_STAGING"
 
 # Default runtime
@@ -765,12 +811,12 @@ EOF_ENV
 chmod 600 "$ENV_FILE"
 chown root:root "$ENV_FILE"
 
-# Add sourcing of env file to root's bashrc if not already present
+debug "Add sourcing of env file to root's bashrc if not already present"
 if ! grep -Fxq "source $ENV_FILE" ~/.bashrc; then
   echo "source $ENV_FILE" >> ~/.bashrc
 fi
 
-# Patch systemd runner services to load environment file (run once before loop)
+debug "Patch systemd runner services to load environment file (run once before loop)"
 info "🔧 Patching existing GitHub Actions runner systemd services to load env variables..."
 for SERVICE_PATH in /etc/systemd/system/actions.runner.*.service; do
   if [[ -f "$SERVICE_PATH" ]] && ! grep -q "^EnvironmentFile=$ENV_FILE" "$SERVICE_PATH"; then
@@ -779,42 +825,44 @@ for SERVICE_PATH in /etc/systemd/system/actions.runner.*.service; do
 done
 systemctl daemon-reload
 
-# Source env file for current script run
+debug "Source env file for current script run"
 source "$ENV_FILE"
 
-# Run MSSQL Docker containers
+SQL_PRODUCTION_CONTAINER="sqlserver_${SAFE_PROJECT_NAME}_production"
+SQL_STAGING_CONTAINER="sqlserver_${SAFE_PROJECT_NAME}_staging"
+
 info "🐳 Starting MSSQL Docker containers..."
 
-if ! docker ps -q -f name=sqlserver_production | grep -q .; then
-  if docker ps -aq -f name=sqlserver_production | grep -q .; then
-    docker start sqlserver_production
+if ! docker ps -q -f name=$SQL_PRODUCTION_CONTAINER | grep -q .; then
+  if docker ps -aq -f name=$SQL_PRODUCTION_CONTAINER | grep -q .; then
+    docker start $SQL_PRODUCTION_CONTAINER
   else
-    docker run -d --name sqlserver_production \
+    docker run -d --name $SQL_PRODUCTION_CONTAINER \
       -e 'ACCEPT_EULA=Y' -e "MSSQL_SA_PASSWORD=$PROD_PASS" \
-      -e 'MSSQL_PID=Express' -v sqlservervol_production:/var/opt/mssql \
+      -e 'MSSQL_PID=Express' -v $SQLSERVERVOL_NAME_PRODUCTION:/var/opt/mssql \
       -p 1434:1433 --restart=always \
       mcr.microsoft.com/mssql/server:2019-latest || true
   fi
 else
-  info "sqlserver_production container is already running."
+  info "$SQL_PRODUCTION_CONTAINER container is already running."
 fi
 
-if ! docker ps -q -f name=sqlserver_staging | grep -q .; then
-  if docker ps -aq -f name=sqlserver_staging | grep -q .; then
-    docker start sqlserver_staging
+if ! docker ps -q -f name=$SQL_STAGING_CONTAINER | grep -q .; then
+  if docker ps -aq -f name=$SQL_STAGING_CONTAINER | grep -q .; then
+    docker start $SQL_STAGING_CONTAINER
   else
-    docker run -d --name sqlserver_staging \
+    docker run -d --name $SQL_STAGING_CONTAINER \
       -e 'ACCEPT_EULA=Y' -e "MSSQL_SA_PASSWORD=$STAGING_PASS" \
-      -e 'MSSQL_PID=Express' -v sqlservervol_staging:/var/opt/mssql \
+      -e 'MSSQL_PID=Express' -v $SQLSERVERVOL_NAME_STAGING:/var/opt/mssql \
       -p 1433:1433 --restart=always \
       mcr.microsoft.com/mssql/server:2019-latest || true
   fi
 else
-  info "sqlserver_staging container is already running."
+  info "$SQL_STAGING_CONTAINER container is already running."
 fi
 
 info "🐳 Installing MSSQL Tools..."
-for c in sqlserver_production sqlserver_staging; do
+for c in SQL_PRODUCTION_CONTAINER SQL_STAGING_CONTAINER; do
   docker exec -u 0 "$c" bash -c '
     if ! command -v sqlcmd >/dev/null 2>&1; then
         echo "Installing mssql-tools in $HOSTNAME..."
@@ -841,7 +889,7 @@ done
 
 info "🔗 Ensuring sqlcmd is on PATH inside MSSQL containers..."
 
-for c in sqlserver_production sqlserver_staging; do
+for c in SQL_PRODUCTION_CONTAINER SQL_STAGING_CONTAINER; do
   info "➡️  Configuring $c"
 
   docker exec -u 0 "$c" bash -c '
@@ -872,8 +920,8 @@ declare -A SECRETS_BACKEND=(
   ["SMTP_PASSWORD"]="$SMTP_PASSWORD"
   ["SMTP_FROM"]="$SMTP_FROM"
   ["SMTP_PORT"]="$SMTP_PORT"
-  ["CONNECTION_STRING"]="Data Source=$VPS_IP,1434;Database=production_db;User ID=sa;Password=$PROD_PASS;Encrypt=True;Trust Server Certificate=True"
-  ["CONNECTION_STRING_STAGING"]="Data Source=$VPS_IP,1433;Database=staging_db;User ID=sa;Password=$STAGING_PASS;Encrypt=True;Trust Server Certificate=True"
+  ["CONNECTION_STRING"]="Data Source=$VPS_IP,1434;Database=$DB_NAME_PRODUCTION;User ID=sa;Password=$PROD_PASS;Encrypt=True;Trust Server Certificate=True"
+  ["CONNECTION_STRING_STAGING"]="Data Source=$VPS_IP,1433;Database=$DB_NAME_STAGING;User ID=sa;Password=$STAGING_PASS;Encrypt=True;Trust Server Certificate=True"
   ["ADMIN_PASSWORD"]="$ADMIN_PASSWORD"
   ["ADMIN_PASSWORD_STAGING"]="$ADMIN_PASSWORD_STAGING"
 )
@@ -1076,7 +1124,7 @@ for ENV in production staging; do
     continue
   fi
 
-  # Set environment-specific variables
+  debug "Set environment-specific variables"
   if [[ "$ENV" == "staging" ]]; then
     DOTNET_ENVIRONMENT="Staging"
     ASPNETCORE_ENVIRONMENT="Staging"
@@ -1096,7 +1144,7 @@ for ENV in production staging; do
     success "Starting $APP_NAME with PM2..."
     info "DEBUG: Running: pm2 start \"$DLL_PATH\" --name \"$APP_NAME\" --interpreter dotnet --update-env"
 
-    # Ensure SMTP env vars are assigned
+    debug "Ensure SMTP env vars are assigned"
     Smtp__Host="${Smtp__Host}"
     Smtp__Username="${Smtp__Username}"
     Smtp__Password="${Smtp__Password}"
@@ -1186,64 +1234,87 @@ declare -A DOMAIN_MAP=(
   ["backend-staging"]="admin-staging.$BASE_DOMAIN"
 )
 
-# 1. Clean up old configs and certs
-rm -rf /etc/nginx/sites-enabled/*
-rm -rf /etc/nginx/sites-available/*
-rm -rf /etc/letsencrypt/live/*
-rm -rf /etc/letsencrypt/archive/*
-rm -rf /etc/letsencrypt/renewal/*
-rm -f /etc/letsencrypt/options-ssl-nginx.conf /etc/letsencrypt/ssl-dhparams.pem
+cleanup_nginx_and_ssl() {
 
-# 2. Install packages
+    warn "This will DELETE all nginx configs and Let's Encrypt certificates."
+
+    if confirm "Are you absolutely sure you want to continue?"; then
+        info "Cleaning up old configs and certs..."
+
+        rm -rf /etc/nginx/sites-enabled/*
+        rm -rf /etc/nginx/sites-available/*
+        rm -rf /etc/letsencrypt/live/*
+        rm -rf /etc/letsencrypt/archive/*
+        rm -rf /etc/letsencrypt/renewal/*
+        rm -f /etc/letsencrypt/options-ssl-nginx.conf \
+              /etc/letsencrypt/ssl-dhparams.pem
+
+        success "Cleanup completed."
+    else
+        warn "Cleanup cancelled."
+    fi
+}
+
+cleanup_nginx_ssl
+
+debug "Install Nginx Certbot packages"
 apt update
 apt install -y nginx certbot python3-certbot-nginx
 systemctl enable nginx
 systemctl start nginx
 
-# 3. Generate HTTP-only Nginx configs
-for env in "${!REPO_ENV_PATHS[@]}"; do
-  domain="${DOMAIN_MAP[$env]}"
-  config_name="$(echo "$env" | tr '_' '-')"
-  config_path="/etc/nginx/sites-available/$config_name"
-  path="${REPO_ENV_PATHS[$env]}"
-  is_backend=false
-  [[ "$path" == "backend" ]] && is_backend=true
+info "Generating HTTPS Nginx configs"
 
-  cat > "$config_path" <<EOF
+for APP in frontend backend; do
+  for ENV in production staging; do
+
+    KEY="${APP}-${ENV}"
+    PROJECT_ENV_NAME="${PROJECT_NAME}-${ENV}"
+
+    domain="${DOMAIN_MAP[$KEY]}"
+    config_name="${PROJECT_ENV_NAME}-${APP}"
+    config_path="/etc/nginx/sites-available/$config_name"
+
+    cat > "$config_path" <<EOF
 server {
-    listen 80;
+    listen 443 ssl http2;
     server_name $domain www.$domain;
+
+    ssl_certificate /etc/letsencrypt/live/$domain/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$domain/privkey.pem;
+
 EOF
 
-  if $is_backend; then
-    port="${BACKEND_PORTS[$env]}"
-    cat >> "$config_path" <<EOF
+    if [[ "$APP" == "backend" ]]; then
+      port="${BACKEND_PORTS[$KEY]}"
+      cat >> "$config_path" <<EOF
     location / {
         proxy_pass http://localhost:$port;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection keep-alive;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_cache_bypass \$http_upgrade;
     }
 EOF
-  else
-    cat >> "$config_path" <<EOF
-    root $path;
-    index index.html;
+    else
+      cat >> "$config_path" <<EOF
     location / {
-        try_files \$uri /index.html;
+        root /opt/apps/$API_BASE_PATH/$PROFILE_NAME/${REPO_NAME_1}-${ENV};
+        index index.html;
+        try_files \$uri \$uri/ /index.html;
     }
 EOF
-  fi
+    fi
 
-  echo "}" >> "$config_path"
-  ln -sf "$config_path" "/etc/nginx/sites-enabled/$config_name"
+    echo "}" >> "$config_path"
+
+    ln -sf "$config_path" "/etc/nginx/sites-enabled/$config_name"
+
+  done
 done
 
-info "🔄4. Testing Nginx configuration and reloading..."
+
+info "🔄 Testing Nginx configuration and reloading..."
 NGINX_OUTPUT=$(nginx -t 2>&1)
 if [[ $? -eq 0 ]]; then
     success "$NGINX_OUTPUT"
@@ -1349,7 +1420,7 @@ select_environment() {
         case $REPLY in
             1)
                 ENVIRONMENT="production"
-                DB_NAME="production_db"
+                DB_NAME="$DB_NAME_PRODUCTION"
                 DB_PASS="$PROD_PASS"
                 DOMAIN_FE="$DOMAIN_FE_PROD"
                 DOMAIN_BE="$DOMAIN_BE_PROD"
@@ -1357,7 +1428,7 @@ select_environment() {
                 ;;
             2)
                 ENVIRONMENT="staging"
-                DB_NAME="staging_db"
+                DB_NAME="$DB_NAME_STAGING"
                 DB_PASS="$STAGING_PASS"
                 DOMAIN_FE="$DOMAIN_FE_STAGING"
                 DOMAIN_BE="$DOMAIN_BE_STAGING"
@@ -1501,14 +1572,14 @@ backup_get_db() {
 set -e
 
 # Ensure container /tmp folder is accessible
-docker exec -u 0 sqlserver_$ENVIRONMENT mkdir -p /tmp
+docker exec -u 0 ${PROFILE_NAME}_${ENVIRONMENT} mkdir -p /tmp
 
 # Run SQL Server backup inside container
-docker exec -u 0 sqlserver_$ENVIRONMENT /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$DB_PASS" \
+docker exec -u 0 ${PROFILE_NAME}_${ENVIRONMENT} /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$DB_PASS" \
     -Q "BACKUP DATABASE [$DB_NAME] TO DISK = N'$VPS_CONTAINER_BACKUP' WITH INIT"
 
 # Copy backup from container to VPS host
-docker cp "sqlserver_$ENVIRONMENT:$VPS_CONTAINER_BACKUP" "$VPS_HOST_BACKUP"
+docker cp "${DB}_${ENVIRONMENT}:${VPS_CONTAINER_BACKUP}" "$VPS_HOST_BACKUP"
 
 # Confirm file exists on VPS host
 ls -lh "$VPS_HOST_BACKUP"
