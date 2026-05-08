@@ -412,8 +412,10 @@ setup_vps() {
 ssh -t -i "$KEY_PATH" "$SSH_USER@$VPS_IP" sudo -E bash -s -- \
   "$VPS_IP" "$PROD_PASS" "$STAGING_PASS" "$ADMIN_PASSWORD" "$ADMIN_PASSWORD_STAGING" \
   "$PRODUCTION_URL_TARGET" "$REPO_OWNER" "$REPO_NAME_1" "$REPO_NAME_2" "$GITHUB_PAT" \
-  "$SSL_EMAIL" "$BASE_DOMAIN" "$DOMAIN_FE_PROD" "$DOMAIN_FE_STAGING" "$DOMAIN_BE_PROD" "$DOMAIN_BE_STAGING" \
-  "$SMTP_HOST" "$SMTP_USERNAME" "$SMTP_PASSWORD" "$SMTP_FROM" "$SMTP_PORT" "$PROFILE_NAME" "$API_BASE_PATH" "$DEBUG" "$DEBUG_VERBOSE" \ "$PARENT_PROJECT_NAME" "$DB_NAME_PRODUCTION" "$DB_NAME_STAGING" \ "$SAFE_PROJECT_NAME" <<'EOF_SCRIPT'
+  "$SSL_EMAIL" "$BASE_DOMAIN" "$DOMAIN_FE_PROD" "$DOMAIN_FE_STAGING" "$DOMAIN_BE_PROD" \
+  "$DOMAIN_BE_STAGING" "$SMTP_HOST" "$SMTP_USERNAME" "$SMTP_PASSWORD" "$SMTP_FROM" "$SMTP_PORT" \
+  "$PROFILE_NAME" "$API_BASE_PATH" "$DEBUG" "$DEBUG_VERBOSE" "$PARENT_PROJECT_NAME" "$DB_NAME_PRODUCTION" \
+  "$DB_NAME_STAGING" "$SAFE_PROJECT_NAME" <<'EOF_SCRIPT'
 
 set -eu
 trap 'echo "❌ Setup failed at line $LINENO"; exit 1' ERR
@@ -459,7 +461,6 @@ for i in {1..26}; do
     eval "echo ARG$i=\${$i}"
 done
 
-debug "re-implementing Colorized echo and helper functions inside heredoc"
 info()    { echo -e "\033[1;34m[INFO]:🔍 $*\033[0m"; }
 warn()    { echo -e "\033[1;33m[WARN]:⚠️ $*\033[0m"; }
 error()   { echo -e "\033[1;31m[ERROR]:❌ $*\033[0m"; }
@@ -469,6 +470,8 @@ debug() {
     echo -e "\033[38;5;208m[DEBUG]:⚙️ $*\033[0m"
   fi
 }
+
+debug "Done re-implementing Colorized echo and helper functions inside heredoc"
 
 confirm() {
     local r
@@ -678,7 +681,7 @@ else
 fi
 
 info "🐳 Installing MSSQL Tools..."
-for c in SQL_PRODUCTION_CONTAINER SQL_STAGING_CONTAINER; do
+for c in $SQL_PRODUCTION_CONTAINER $SQL_STAGING_CONTAINER; do
   docker exec -u 0 "$c" bash -c '
     if ! command -v sqlcmd >/dev/null 2>&1; then
         echo "Installing mssql-tools in $HOSTNAME..."
@@ -705,7 +708,7 @@ done
 
 info "🔗 Ensuring sqlcmd is on PATH inside MSSQL containers..."
 
-for c in SQL_PRODUCTION_CONTAINER SQL_STAGING_CONTAINER; do
+for c in $SQL_PRODUCTION_CONTAINER $SQL_STAGING_CONTAINER; do
   info "➡️  Configuring $c"
 
   docker exec -u 0 "$c" bash -c '
@@ -1090,10 +1093,8 @@ EOF
   done
 done
 
-
 info "🔄 Testing Nginx configuration and reloading..."
-NGINX_OUTPUT=$(nginx -t 2>&1)
-if [[ $? -eq 0 ]]; then
+if NGINX_OUTPUT=$(nginx -t 2>&1); then
     success "$NGINX_OUTPUT"
     systemctl reload nginx
 else

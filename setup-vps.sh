@@ -599,7 +599,6 @@ DB_NAME_STAGING="${29}"
 SAFE_PROJECT_NAME="${30}"
 
 
-debug "re-implementing Colorized echo and helper functions inside heredoc"
 
 info()    { echo -e "\033[1;34m[INFO]:🔍 $*\033[0m"; }
 warn()    { echo -e "\033[1;33m[WARN]:⚠️ $*\033[0m"; }
@@ -610,6 +609,8 @@ debug() {
     echo -e "\033[38;5;208m[DEBUG]:⚙️ $*\033[0m"
   fi
 }
+
+debug "Done re-implementing Colorized echo and helper functions inside heredoc"
 
 confirm() {
     local r
@@ -692,8 +693,30 @@ for pkg in certbot python3-certbot-nginx ffmpeg curl apt-transport-https softwar
   fi
 done
 
-systemctl enable --now docker
-systemctl enable --now nginx
+info "Ensuring Docker is enabled and running..."
+
+if ! systemctl is-enabled docker &>/dev/null; then
+  systemctl enable --now docker
+  success "Docker enabled"
+else
+  info "Docker already enabled"
+fi
+
+if ! systemctl is-active docker &>/dev/null; then
+  systemctl start docker
+  success "Docker started"
+else
+  info "Docker already running"
+fi
+
+info "Ensuring Nginx is enabled..."
+
+if ! systemctl is-enabled nginx &>/dev/null; then
+  systemctl enable --now nginx
+  success "Nginx enabled"
+else
+  info "Nginx already enabled"
+fi
 
 info "📦 Checking/installing required Python dependencies..."
 
@@ -862,7 +885,7 @@ else
 fi
 
 info "🐳 Installing MSSQL Tools..."
-for c in SQL_PRODUCTION_CONTAINER SQL_STAGING_CONTAINER; do
+for c in $SQL_PRODUCTION_CONTAINER $SQL_STAGING_CONTAINER; do
   docker exec -u 0 "$c" bash -c '
     if ! command -v sqlcmd >/dev/null 2>&1; then
         echo "Installing mssql-tools in $HOSTNAME..."
@@ -889,7 +912,7 @@ done
 
 info "🔗 Ensuring sqlcmd is on PATH inside MSSQL containers..."
 
-for c in SQL_PRODUCTION_CONTAINER SQL_STAGING_CONTAINER; do
+for c in $SQL_PRODUCTION_CONTAINER $SQL_STAGING_CONTAINER; do
   info "➡️  Configuring $c"
 
   docker exec -u 0 "$c" bash -c '
@@ -1234,28 +1257,15 @@ declare -A DOMAIN_MAP=(
   ["backend-staging"]="admin-staging.$BASE_DOMAIN"
 )
 
-cleanup_nginx_and_ssl() {
+warn "Purging any orphan nginx configs and Let's Encrypt certificates."
 
-    warn "This will DELETE all nginx configs and Let's Encrypt certificates."
-
-    if confirm "Are you absolutely sure you want to continue?"; then
-        info "Cleaning up old configs and certs..."
-
-        rm -rf /etc/nginx/sites-enabled/*
-        rm -rf /etc/nginx/sites-available/*
-        rm -rf /etc/letsencrypt/live/*
-        rm -rf /etc/letsencrypt/archive/*
-        rm -rf /etc/letsencrypt/renewal/*
-        rm -f /etc/letsencrypt/options-ssl-nginx.conf \
-              /etc/letsencrypt/ssl-dhparams.pem
-
-        success "Cleanup completed."
-    else
-        warn "Cleanup cancelled."
-    fi
-}
-
-cleanup_nginx_ssl
+rm -rf /etc/nginx/sites-enabled/*
+rm -rf /etc/nginx/sites-available/*
+rm -rf /etc/letsencrypt/live/*
+rm -rf /etc/letsencrypt/archive/*
+rm -rf /etc/letsencrypt/renewal/*
+rm -f /etc/letsencrypt/options-ssl-nginx.conf \
+      /etc/letsencrypt/ssl-dhparams.pem
 
 debug "Install Nginx Certbot packages"
 apt update
@@ -1263,7 +1273,7 @@ apt install -y nginx certbot python3-certbot-nginx
 systemctl enable nginx
 systemctl start nginx
 
-info "Generating HTTPS Nginx configs"
+info "Generating HTTP Nginx configs"
 
 for APP in frontend backend; do
   for ENV in production staging; do
@@ -1277,11 +1287,8 @@ for APP in frontend backend; do
 
     cat > "$config_path" <<EOF
 server {
-    listen 443 ssl http2;
+    listen 80;
     server_name $domain www.$domain;
-
-    ssl_certificate /etc/letsencrypt/live/$domain/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$domain/privkey.pem;
 
 EOF
 
@@ -1299,7 +1306,7 @@ EOF
     else
       cat >> "$config_path" <<EOF
     location / {
-        root /opt/apps/$API_BASE_PATH/$PROFILE_NAME/${REPO_NAME_1}-${ENV};
+        root /opt/apps/${REPO_NAME_1}-${ENV};
         index index.html;
         try_files \$uri \$uri/ /index.html;
     }
@@ -1312,17 +1319,6 @@ EOF
 
   done
 done
-
-
-info "🔄 Testing Nginx configuration and reloading..."
-NGINX_OUTPUT=$(nginx -t 2>&1)
-if [[ $? -eq 0 ]]; then
-    success "$NGINX_OUTPUT"
-    systemctl reload nginx
-else
-    error "$NGINX_OUTPUT"
-    exit 1
-fi
 
 # 5. Run certbot with nginx plugin to install certs and enable HTTPS if needed
 if [[ "$certbot_args" != "SKIP_CERTBOT" ]]; then
@@ -1349,6 +1345,14 @@ else
     info "⏭️ Skipping Certbot inside heredoc (dummy arg detected)"
 fi
 
+info "🔄 Testing Nginx configuration and reloading..."
+if NGINX_OUTPUT=$(nginx -t 2>&1); then
+    success "$NGINX_OUTPUT"
+    systemctl reload nginx
+else
+    error "$NGINX_OUTPUT"
+    exit 1
+fi
 
 success "SSL setup complete for all environments."
 echo

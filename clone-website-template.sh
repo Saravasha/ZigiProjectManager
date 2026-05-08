@@ -168,6 +168,7 @@ normalize_profile() {
 # === Profile Management ===
 create_new_profile() {
 
+    info "Create Domain App Profile"
     read -rp "📦 Project name: " PROJECT_NAME
     PROJECT_SLUG="${PROJECT_NAME}"
 
@@ -195,6 +196,9 @@ create_new_profile() {
 
     FRONTEND_NAME="${PROJECT_NAME}-frontend"
     BACKEND_NAME="${PROJECT_NAME}-backend"
+
+    debug "${FRONTEND_NAME}"
+    debug "${BACKEND_NAME}"
 
     jq -n \
       --arg project_name "$PROJECT_NAME" \
@@ -229,13 +233,13 @@ create_new_profile() {
 create_routed_app() {
 
     info "Create Routed App"
-    require_profile || return 1
 
     [[ "$profile_type" == "apps" && -z "$parent_project" ]] && {
         read -rp "Enter parent project for routed app '$project_name': " parent_project
         info "✅ parent_project set to '$parent_project'"
     }
 
+    debug "create_routed_app.profile_type = $PROFILE_TYPE"
     # Ensure parent is a domain profile
     if [[ "$PROFILE_TYPE" != "domain" ]]; then
         error "Routed apps can only be added under a domain profile."
@@ -247,6 +251,10 @@ create_routed_app() {
     BACKEND_NAME="${PROJECT_NAME}-${APP_NAME}-backend"
     API_BASE_PATH="/myapps/$APP_NAME"
     API_BASE_PATH=$(normalize_api_path "$API_BASE_PATH")
+
+    debug "create_routed_app.frontend = ${FRONTEND_NAME}"
+    debug "create_routed_app.backend = ${BACKEND_NAME}"
+    debug "create_routed_app.api_base_path = ${API_BASE_PATH}"
 
     shopt -s nullglob
     APP_PROFILE="$PROFILE_DIR/$APP_NAME.json"
@@ -369,7 +377,7 @@ use_profile() {
             EMAIL=$(jq -r .email "$PROFILE_JSON")
             PROJECT_DIR=$(jq -r .project_dir "$PROFILE_JSON")
 
-            info "Using profile: $PROJECT_NAME"
+            info "Using profile: ${PROJECT_NAME:-None}"
             break
         else
             warn "Invalid selection, try again."
@@ -384,9 +392,12 @@ clone_templates() {
     [[ ! -d "$TEMPLATE_PARENT_DIR/$TEMPLATE_BACKEND" ]] && \
         git clone "https://github.com/Saravasha/website-backend-template.git" "$TEMPLATE_PARENT_DIR/$TEMPLATE_BACKEND"
     success "Templates ready at $TEMPLATE_PARENT_DIR"
+    debug "clone_templates.template_parent_dir (static variable) = $TEMPLATE_PARENT_DIR"
 }
 
 setup_project_structure() {
+
+    # Setup project directory structure on the local machine and cloning the templates.
     local base_dir
     if [[ -n "$GITHUB_ORG" ]]; then
         base_dir="$SCRIPT_PARENT_DIR/$GITHUB_ORG"
@@ -396,8 +407,15 @@ setup_project_structure() {
 
     PROJECT_DIR="$base_dir/$PROJECT_NAME"
 
+    # if [[ "$APP_PROFILE" ]]; then
+    #     PROJECT_DIR="$base_dir/$PROJECT_NAME"
+    # fi
+
+    debug "setup_project_structure.project_dir = $PROJECT_DIR"
+
     if [[ -d "$PROJECT_DIR" ]]; then
         warn "Project directory already exists: $PROJECT_DIR"
+        debug "setup_project_structure error: Directory $PROJECT_DIR already exists, potential overwrite risk."
         read -rp "Do you want to overwrite it? (y/N): " confirm
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
             error "Aborting project setup to avoid overwriting existing directory."
@@ -414,6 +432,8 @@ setup_project_structure() {
     info "📁 Project structure created at $PROJECT_DIR"
 }
 
+# Refactor the app env, app-name paths to be dynamic from hard coded paths etc, start with Clone-Website-template then move onto setup-vps and setup-app
+
 # === Function: Initialize Frontend Repo ===
 init_frontend_repo() {
 
@@ -427,7 +447,9 @@ init_frontend_repo() {
         DEPLOY_PROJECT_NAME="$(jq -r .parent_project "$PROFILE_JSON")"
         # Determine parent project domain
         local parent_profile="$PROFILE_DIR/$(jq -r .parent_project "$PROFILE_JSON").json"
+        debug "${parent_profile}"
         DOMAIN_NAME=$(jq -r '.domain // ""' "$parent_profile")
+        debug "{$DOMAIN_NAME}"
     fi
 
     local STAGING_BASE="/opt/apps/${DEPLOY_PROJECT_NAME}-staging"
@@ -742,10 +764,9 @@ setup_project() {
     GITHUB_ORG=$(jq -r .github_org "$PROFILE_JSON")
     GH_TARGET="${GITHUB_ORG:-$REPO_OWNER}"
 
-    debug "$REPO_OWNER"
-    debug "$EMAIL"
-    
-
+    debug "setup_project.repo_owner = $REPO_OWNER"
+    debug "setup_project.email = $EMAIL"
+    debug "setup_project.github_org = $GITHUB_ORG"
     setup_project_structure
     init_frontend_repo
     init_backend_repo
@@ -753,15 +774,23 @@ setup_project() {
 }
 
 setup_routed_app() {
-    require_profile || return 1
-
-    [[ "$PROFILE_TYPE" != "apps" ]] && {
-        error "Only routed app profiles can be set up here."
+    # Applets that are bound to the route path of the domain website i.e saravasha.com/applet. Part of option 4
+    
+    debug "setup_routed_app.Profile_type  = $PROFILE_TYPE"
+    
+    [[ "$PROFILE_TYPE" != "domain" ]] && {
+        error "Select a parent domain profile. Only routed app profiles can be set up here."
+        debug "setup_routed_app error: Invalid profile type. Expected 'domain', got '$PROFILE_TYPE'"
         return 1
     }
 
+    debug "setup_routed_app.app_profile = $APP_PROFILE"
+    debug "setup_routed_app.profile_dir = $PROFILE_DIR"
+    debug "setup_routed_app.profile_json = $PROFILE_JSON"
+
     # Ensure parent project info is loaded
     local parent_profile="$PROFILE_DIR/$(jq -r .parent_project "$PROFILE_JSON").json"
+    debug "setup_routed_app.parent_profile = $parent_profile"
     if [[ ! -f "$parent_profile" ]]; then
         error "Parent domain profile not found: $parent_profile"
         return 1
@@ -773,7 +802,7 @@ setup_routed_app() {
     clone_templates
 
     # Setup project structure
-    setup_project_structure
+    #setup_project_structure
 
     # Initialize frontend & backend
     init_frontend_repo
@@ -805,6 +834,8 @@ options=("Create new profile" "Remove a profile" "Use existing profile" "Create 
 while true; do
     print_header
     debug "Debug mode engaged!"
+    debug "Using profile: ${PROJECT_NAME:-None}"
+    info "Current profile: ${PROJECT_NAME:-None}"
 
     PS3="Choose an option: "
     set +u
@@ -813,7 +844,7 @@ while true; do
             1) create_new_profile ;;
             2) remove_profile ;;
             3) use_profile ;;
-            4) require_profile && create_routed_app && setup_routed_app ;;
+            4) require_profile && create_routed_app ;;
             5) require_profile && detect_runtimes ;;
             6) require_profile && setup_project ;;
             7) return_to_menu ;;
