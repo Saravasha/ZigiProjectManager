@@ -444,12 +444,14 @@ init_frontend_repo() {
     # If this is a routed app, use api_base_path from profile
     if [[ "$PROFILE_TYPE" == "apps" ]]; then
         API_BASE_PATH=$(jq -r '.api_base_path // "/myapps/'"$PROJECT_NAME"'"' "$PROFILE_JSON")
+        debug "init_frontend_repo.api_base_path = ${API_BASE_PATH}"
         DEPLOY_PROJECT_NAME="$(jq -r .parent_project "$PROFILE_JSON")"
+        debug "init_frontend_repo.deploy_project_name = ${DEPLOY_PROJECT_NAME}"
         # Determine parent project domain
         local parent_profile="$PROFILE_DIR/$(jq -r .parent_project "$PROFILE_JSON").json"
-        debug "${parent_profile}"
+        debug "init_frontend_repo.parent_profile = ${parent_profile}"
         DOMAIN_NAME=$(jq -r '.domain // ""' "$parent_profile")
-        debug "{$DOMAIN_NAME}"
+        debug "init_frontend_repo.domain_name = ${DOMAIN_NAME}"
     fi
 
     local STAGING_BASE="/opt/apps/${DEPLOY_PROJECT_NAME}-staging"
@@ -461,6 +463,8 @@ init_frontend_repo() {
     if [[ "$PROFILE_TYPE" == "apps" ]]; then
         STAGING_DEPLOY_PATH="$STAGING_BASE$API_BASE_PATH"
         PRODUCTION_DEPLOY_PATH="$PRODUCTION_BASE$API_BASE_PATH"
+        debug "init_frontend_repo.staging_deploy_path = ${STAGING_DEPLOY_PATH}"
+        debug "init_frontend_repo.production_deploy_path = ${PRODUCTION_DEPLOY_PATH}"
     fi
 
     # guarding empty vars
@@ -566,7 +570,7 @@ init_backend_repo() {
         local ENV_NAME="staging"
         [[ "$file" == *"production"* ]] && ENV_NAME="production"
 
-        local RUNNER_BASE="/opt/actions-runners/backend-${ENV_NAME}/_work"
+        local RUNNER_BASE="/opt/actions-runners/$BACKEND_NAME-${ENV_NAME}/_work"
         local BACKEND_ROOT="$RUNNER_BASE/$BACKEND_NAME/$BACKEND_NAME"
         local DLL_PATH="$BACKEND_ROOT/WebAppBackend.dll"
 
