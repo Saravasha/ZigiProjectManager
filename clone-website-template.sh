@@ -859,9 +859,4 @@ while true; do
             5) require_profile && detect_runtimes ;;
             6) require_profile && setup_project ;;
             7) return_to_menu ;;
-            *) warn "Invalid choice" ;;
-        esac
-        break
-    done
-    set -u
-done
+;
