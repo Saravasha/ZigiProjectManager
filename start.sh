@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+trap 'echo "❌ Failed at line $LINENO"' ERR
+
 # --- Default settings ---
 DEBUG=false
 DEBUG_VERBOSE=false
