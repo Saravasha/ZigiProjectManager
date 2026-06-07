@@ -36,6 +36,7 @@ success() { echo -e "\033[1;32m[SUCCESS]:✅ $*\033[0m"; }
 debug() {
   if [[ "$DEBUG" == true && "$DEBUG_VERBOSE" == false ]]; then
     echo -e "\033[38;5;208m[DEBUG]:⚙️ $*\033[0m"
+    SKIP_GIT=true
   fi
 }
 
@@ -520,6 +521,8 @@ init_frontend_repo() {
         return 1
     fi
 
+    [[ "$SKIP_GIT" == true ]] && debug "escape point reached before git init." && return 0 
+
     # Git init & commit
     git init -b main
     git config user.name "$REPO_OWNER"
@@ -564,22 +567,27 @@ init_backend_repo() {
     # ------------------------------------------------------------------
     # Workflow token replacement (PM2 names, paths, backend name)
     # ------------------------------------------------------------------
-    for file in .github/workflows/*.yml; do
+    for file in .github/workflows/deploy-*.yml; do
         [[ -f "$file" ]] || continue
 
-        local ENV_NAME="staging"
-        [[ "$file" == *"production"* ]] && ENV_NAME="production"
+        local ENV_NAME
+        if [[ "$file" == *"deploy-staging.yml" ]]; then
+            ENV_NAME="production"
+        elif [[ "$file" == *"deploy-dev.yml" ]]; then
+            ENV_NAME="staging"
+        fi
 
         local RUNNER_BASE="/opt/actions-runners/$BACKEND_NAME-${ENV_NAME}/_work"
         local BACKEND_ROOT="$RUNNER_BASE/$BACKEND_NAME/$BACKEND_NAME"
         local DLL_PATH="$BACKEND_ROOT/WebAppBackend.dll"
 
         # PM2 app name
-        local PM2_APP_NAME="${DEPLOY_PROJECT_NAME}-backend"
+        local PM2_APP_NAME="${DEPLOY_PROJECT_NAME}-backend-${ENV_NAME}"
+        debug "init_backend_repo.deploy_project_name = ${DEPLOY_PROJECT_NAME}"
+        debug "init_backend_repo.pm2_app_name = ${PM2_APP_NAME}"
         if [[ "$PROFILE_TYPE" == "apps" ]]; then
-            PM2_APP_NAME="${PM2_APP_NAME}-${PROJECT_NAME}"
+            PM2_APP_NAME="${BACKEND_NAME}-${ENV_NAME}"
         fi
-        PM2_APP_NAME="${PM2_APP_NAME}-${ENV_NAME}"
 
         sed -i \
             -e "s@__BACKEND_NAME__@$BACKEND_NAME@g" \
@@ -772,8 +780,7 @@ setup_project() {
     debug "setup_project.email = $EMAIL"
     debug "setup_project.github_org = $GITHUB_ORG"
     setup_project_structure
-    init_frontend_repo
-    init_backend_repo
+    init_github_repos
     success "🎉 Project [$PROJECT_NAME] setup complete under owner [$GH_TARGET]."
 }
 
