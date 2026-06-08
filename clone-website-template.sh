@@ -36,18 +36,33 @@ success() { echo -e "\033[1;32m[SUCCESS]:✅ $*\033[0m"; }
 debug() {
   if [[ "$DEBUG" == true && "$DEBUG_VERBOSE" == false ]]; then
     echo -e "\033[38;5;208m[DEBUG]:⚙️ $*\033[0m"
-    SKIP_GIT=true
   fi
 }
 
+
+
 # === Global Paths & Constants ===
-SCRIPT_PARENT_DIR="$(pwd)/../"
+
+# Absolute path to script directory (stable anchor)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+info "$SCRIPT_DIR"
+
+# Absolute path to project root (one level above script)
+SCRIPT_PARENT_DIR="$(realpath "$SCRIPT_DIR/..")"
+
+info "$SCRIPT_PARENT_DIR"
+
+# Absolute path to templates (sibling of script parent)
+TEMPLATE_PARENT_DIR="$(realpath "$SCRIPT_PARENT_DIR/website-templates")"
+
+info "$TEMPLATE_PARENT_DIR"
+
 PROFILE_DIR="$HOME/.clone-website-profiles"
-TEMPLATE_PARENT_DIR="../website-templates"
 TEMPLATE_FRONTEND="website-template-frontend"
 TEMPLATE_BACKEND="website-template-backend"
-mkdir -p "$PROFILE_DIR" "$TEMPLATE_PARENT_DIR"
 
+mkdir -p "$PROFILE_DIR" "$TEMPLATE_PARENT_DIR"
 # === Helper Functions === 🤡
 install_tools() {
     declare -A tools=( [git]=git [jq]=jq [sed]=sed [bash]=bash [gh]=gh [curl]=curl [unzip]=unzip )
@@ -63,7 +78,6 @@ install_tools() {
         sudo apt-get install -y "${missing[@]}"
     fi
 }
-
 install_dotnet() {
     if ! command -v dotnet &>/dev/null; then
         warn "⚡ .NET SDK not found, installing..."
@@ -77,6 +91,45 @@ install_dotnet() {
     fi
 }
 
+migrations_dotnet() {
+
+    local backend_path="$1"
+
+    if [[ -z "$backend_path" ]]; then
+        error "backend_path not provided to migrations_dotnet"
+        return 1
+    fi
+
+    [[ "$DEBUG" == true ]] && {
+        debug "Skipping dotnet migrations (DEBUG mode)"
+        return 0
+    }
+     # ------------------------------------------------------------------
+    # EF Core migrations
+    # ------------------------------------------------------------------
+    local migrations_dir="$backend_path/Migrations"
+    info "🔎 Checking backend migrations for init..."
+
+    if [[ -d "$migrations_dir" ]] && find "$migrations_dir" -iname "*init*.cs" | grep -q .; then
+        success "Init migration already exists."
+    else
+        info "⚡ Creating init migration..."
+        dotnet ef migrations add init --context ApplicationDbContext --output-dir Migrations
+        success "Init migration created."
+    fi
+
+    # ------------------------------------------------------------------
+    # Database update
+    # ------------------------------------------------------------------
+    if grep -qi microsoft /proc/version &>/dev/null; then
+        info "⚡ Skipping database update on WSL"
+    else
+        info "⚡ Updating database..."
+        dotnet ef database update --context ApplicationDbContext
+        success "Database up-to-date."
+    fi
+
+}
 normalize_api_path() {
     local path="$1"
     # Remove trailing slash
@@ -87,7 +140,6 @@ normalize_api_path() {
     path=$(echo "$path" | tr '[:upper:]' '[:lower:]')
     echo "$path"
 }
-
 normalize_profile() {
     local profile_file="$1"
     local tmp="$profile_file.tmp"
@@ -121,11 +173,6 @@ normalize_profile() {
     [[ "$profile_type" == "apps" && -z "$api_base_path" ]] && {
         api_base_path="/myapps/$project_name"
         info "🔗 Adding missing api_base_path to $project_name"
-    }
-
-    [[ "$profile_type" == "apps" && -z "$parent_project" ]] && {
-        read -rp "Enter parent project for routed app '$project_name': " parent_project
-        info "✅ parent_project set to '$parent_project'"
     }
 
     # --- Ensure runtimes object exists ---
@@ -165,16 +212,25 @@ normalize_profile() {
     chmod 600 "$profile_file"
 }
 
+generate_project_dir() {
+    local name="$1"
+    local org="$2"
+
+    if [[ -n "$org" ]]; then
+        echo "$SCRIPT_PARENT_DIR/$org/$name"
+    else
+        echo "$SCRIPT_PARENT_DIR/$name"
+    fi
+}
 
 # === Profile Management ===
 create_new_profile() {
 
     info "Create Domain App Profile"
     read -rp "📦 Project name: " PROJECT_NAME
-    PROJECT_SLUG="${PROJECT_NAME}"
 
     local profile_path="$PROFILE_DIR/$PROJECT_NAME.json"
-    
+
     if [[ -f "$profile_path" ]]; then
         error "Profile '$PROJECT_NAME' already exists."
         return 1
@@ -191,15 +247,18 @@ create_new_profile() {
         GITHUB_ORG=""
     fi
 
-    # By default, every new profile is a domain-level app
     PROFILE_TYPE="domain"
     read -rp "🌐 Domain name (example.com): " DOMAIN_NAME
 
     FRONTEND_NAME="${PROJECT_NAME}-frontend"
     BACKEND_NAME="${PROJECT_NAME}-backend"
 
-    debug "${FRONTEND_NAME}"
-    debug "${BACKEND_NAME}"
+    # ✅ SINGLE SOURCE OF TRUTH
+    PROJECT_DIR="$(generate_project_dir "$PROJECT_NAME" "$GITHUB_ORG")"
+
+    debug "frontend = $FRONTEND_NAME"
+    debug "backend = $BACKEND_NAME"
+    debug "project_dir = $PROJECT_DIR"
 
     jq -n \
       --arg project_name "$PROJECT_NAME" \
@@ -211,6 +270,7 @@ create_new_profile() {
       --arg repo_owner "$REPO_OWNER" \
       --arg email "$EMAIL" \
       --arg profile_type "$PROFILE_TYPE" \
+      --arg project_dir "$PROJECT_DIR" \
       '{
         project_name: $project_name,
         domain: $domain,
@@ -223,6 +283,7 @@ create_new_profile() {
         repo_owner: $repo_owner,
         email: $email,
         profile_type: $profile_type,
+        project_dir: $project_dir,
         runtimes: {}
       }' > "$profile_path"
 
@@ -230,43 +291,49 @@ create_new_profile() {
     success "Profile saved: $profile_path"
 }
 
-
 create_routed_app() {
 
     info "Create Routed App"
 
-    [[ "$profile_type" == "apps" && -z "$parent_project" ]] && {
-        read -rp "Enter parent project for routed app '$project_name': " parent_project
-        info "✅ parent_project set to '$parent_project'"
-    }
-
-    debug "create_routed_app.profile_type = $PROFILE_TYPE"
-    # Ensure parent is a domain profile
     if [[ "$PROFILE_TYPE" != "domain" ]]; then
-        error "Routed apps can only be added under a domain profile."
+        error "Routed apps can only be created from a domain profile."
+        return 1
+    fi
+
+    if [[ -z "${PROJECT_NAME:-}" ]]; then
+        error "No active parent project selected."
         return 1
     fi
 
     read -rp "📦 App name: " APP_NAME
+
     FRONTEND_NAME="${PROJECT_NAME}-${APP_NAME}-frontend"
     BACKEND_NAME="${PROJECT_NAME}-${APP_NAME}-backend"
+
     API_BASE_PATH="/myapps/$APP_NAME"
     API_BASE_PATH=$(normalize_api_path "$API_BASE_PATH")
 
-    debug "create_routed_app.frontend = ${FRONTEND_NAME}"
-    debug "create_routed_app.backend = ${BACKEND_NAME}"
-    debug "create_routed_app.api_base_path = ${API_BASE_PATH}"
+    APP_PROJECT_DIR="$(generate_project_dir "$APP_NAME" "$GITHUB_ORG")"
 
-    shopt -s nullglob
     APP_PROFILE="$PROFILE_DIR/$APP_NAME.json"
-    shopt -u nullglob
-    if [[ -f "$APP_PROFILE" ]]; then
-        error "Profile for app '$APP_NAME' already exists."
+
+    parent_profile="$PROFILE_DIR/${PROJECT_NAME}.json"
+
+    if [[ ! -f "$parent_profile" ]]; then
+        error "Parent profile not found: $parent_profile"
+        return 1
+    fi
+
+    parent_domain="$(jq -r '.domain // ""' "$parent_profile")"
+
+    if [[ -z "$parent_domain" ]]; then
+        error "Parent domain missing in profile"
         return 1
     fi
 
     jq -n \
     --arg project_name "$APP_NAME" \
+    --arg domain "$parent_domain" \
     --arg frontend "$FRONTEND_NAME" \
     --arg backend "$BACKEND_NAME" \
     --arg parent_project "$PROJECT_NAME" \
@@ -276,8 +343,10 @@ create_routed_app() {
     --arg repo_owner "$REPO_OWNER" \
     --arg email "$EMAIL" \
     --arg profile_type "apps" \
+    --arg project_dir "$APP_PROJECT_DIR" \
     '{
         project_name: $project_name,
+        domain: $domain,
         frontend: $frontend,
         backend: $backend,
         parent_project: $parent_project,
@@ -287,13 +356,13 @@ create_routed_app() {
         repo_owner: $repo_owner,
         email: $email,
         profile_type: $profile_type,
+        project_dir: $project_dir,
         runtimes: {}
     }' > "$APP_PROFILE"
 
     chmod 600 "$APP_PROFILE"
     success "Routed app profile saved: $APP_PROFILE"
 }
-
 build_profile_menu() {
 
     info "📁 Available profiles:"
@@ -323,8 +392,24 @@ build_profile_menu() {
 
     PROFILE_OPTIONS+=("❌ Cancel")
 }
+reset_session() {
 
+    unset PROFILE_JSON
+    unset PROJECT_NAME
+    unset DOMAIN_NAME
+    unset FRONTEND_NAME
+    unset BACKEND_NAME
+    unset PROJECT_DIR
+    unset PROFILE_TYPE
 
+    unset GITHUB_ORG
+    unset GITHUB_PAT
+    unset REPO_OWNER
+    unset EMAIL
+
+    unset APP_PROFILE
+    unset GH_TARGET
+}
 remove_profile() {
     warn "📁 Remove a profile:"
 
@@ -352,8 +437,65 @@ remove_profile() {
     done
 }
 
+dump_state() {
+    [[ "$DEBUG" == false ]] && return 0
+    info "===== STATE ====="
+
+    debug "PROJECT_NAME=${PROJECT_NAME:-}"
+    debug "PROFILE_TYPE=${PROFILE_TYPE:-}"
+    debug "PROJECT_DIR=${PROJECT_DIR:-}"
+    debug "FRONTEND_NAME=${FRONTEND_NAME:-}"
+    debug "BACKEND_NAME=${BACKEND_NAME:-}"
+}
+
+validate_state() {
+
+    [[ -n "${PROFILE_JSON:-}" ]] || {
+        error "No profile selected"
+        return 1
+    }
+
+    [[ -f "$PROFILE_JSON" ]] || {
+        error "Profile file missing"
+        return 1
+    }
+
+    [[ -n "${PROJECT_NAME:-}" ]] || {
+        error "PROJECT_NAME missing"
+        return 1
+    }
+
+    [[ -n "${PROFILE_TYPE:-}" ]] || {
+        error "PROFILE_TYPE missing"
+        return 1
+    }
+}
+
+load_profile() {
+
+ local profile="$1"
+
+    PROFILE_JSON="$profile"
+
+    PROJECT_NAME=$(jq -r .project_name "$profile")
+    DOMAIN_NAME=$(jq -r .domain "$profile")
+    FRONTEND_NAME=$(jq -r .frontend "$profile")
+    BACKEND_NAME=$(jq -r .backend "$profile")
+    PARENT_PROJECT=$(jq -r '.parent_project // empty' "$profile")
+    API_BASE_PATH=$(jq -r '.api_base_path // empty' "$profile")
+    GITHUB_PAT=$(jq -r .github_pat "$profile")
+    GITHUB_ORG=$(jq -r .github_org "$profile")
+    REPO_OWNER=$(jq -r .repo_owner "$profile")
+    EMAIL=$(jq -r .email "$profile")
+    PROFILE_TYPE=$(jq -r .profile_type "$profile")
+    PROJECT_DIR=$(jq -r .project_dir "$profile")
+    RUNTIMES=$(jq -r '.runtimes // {}' "$profile")
+}
+
 use_profile() {
     info "Select an existing profile"
+
+    reset_session
 
     build_profile_menu || { error "No profiles found."; return; }
 
@@ -367,16 +509,7 @@ use_profile() {
 
             normalize_profile "$PROFILE_JSON"
 
-            PROJECT_NAME=$(jq -r .project_name "$PROFILE_JSON")
-            DOMAIN_NAME=$(jq -r .domain "$PROFILE_JSON")
-            FRONTEND_NAME=$(jq -r .frontend "$PROFILE_JSON")
-            BACKEND_NAME=$(jq -r .backend "$PROFILE_JSON")
-            GITHUB_PAT=$(jq -r .github_pat "$PROFILE_JSON")
-            GITHUB_ORG=$(jq -r .github_org "$PROFILE_JSON")
-            PROFILE_TYPE=$(jq -r .profile_type "$PROFILE_JSON")
-            REPO_OWNER=$(jq -r .repo_owner "$PROFILE_JSON")
-            EMAIL=$(jq -r .email "$PROFILE_JSON")
-            PROJECT_DIR=$(jq -r .project_dir "$PROFILE_JSON")
+            load_profile "$PROFILE_JSON"
 
             info "Using profile: ${PROJECT_NAME:-None}"
             break
@@ -387,51 +520,132 @@ use_profile() {
 }
 
 clone_templates() {
+    info "Cloning Templates..."
     mkdir -p "$TEMPLATE_PARENT_DIR"
-    [[ ! -d "$TEMPLATE_PARENT_DIR/$TEMPLATE_FRONTEND" ]] && \
-        git clone "https://github.com/Saravasha/website-frontend-template.git" "$TEMPLATE_PARENT_DIR/$TEMPLATE_FRONTEND"
-    [[ ! -d "$TEMPLATE_PARENT_DIR/$TEMPLATE_BACKEND" ]] && \
-        git clone "https://github.com/Saravasha/website-backend-template.git" "$TEMPLATE_PARENT_DIR/$TEMPLATE_BACKEND"
+
+    local frontend_dest="$TEMPLATE_PARENT_DIR/$TEMPLATE_FRONTEND"
+    local backend_dest="$TEMPLATE_PARENT_DIR/$TEMPLATE_BACKEND"
+
+    debug "PWD=$(pwd)"
+    debug "SCRIPT_PARENT_DIR=$SCRIPT_PARENT_DIR"
+    debug "TEMPLATE_PARENT_DIR=$TEMPLATE_PARENT_DIR"
+    debug "resolved TEMPLATE_PARENT_DIR=$(realpath "$TEMPLATE_PARENT_DIR")"
+
+    if [[ ! -d "$frontend_dest" ]]; then
+        git clone "https://github.com/Saravasha/website-frontend-template.git" "$frontend_dest"
+    fi
+
+    if [[ ! -d "$backend_dest" ]]; then
+        git clone "https://github.com/Saravasha/website-backend-template.git" "$backend_dest"
+    fi
+
     success "Templates ready at $TEMPLATE_PARENT_DIR"
-    debug "clone_templates.template_parent_dir (static variable) = $TEMPLATE_PARENT_DIR"
 }
 
 setup_project_structure() {
 
-    # Setup project directory structure on the local machine and cloning the templates.
-    local base_dir
-    if [[ -n "$GITHUB_ORG" ]]; then
-        base_dir="$SCRIPT_PARENT_DIR/$GITHUB_ORG"
-    else
-        base_dir="$SCRIPT_PARENT_DIR"
-    fi
+    info "📁 Setting up project structure from profile"
 
-    PROJECT_DIR="$base_dir/$PROJECT_NAME"
+    [[ -z "${PROFILE_JSON:-}" ]] && {
+        error "No profile selected"
+        return 1
+    }
 
-    # if [[ "$APP_PROFILE" ]]; then
-    #     PROJECT_DIR="$base_dir/$PROJECT_NAME"
-    # fi
+    # ✅ SINGLE SOURCE OF TRUTH
+    local PROJECT_DIR FRONTEND_NAME BACKEND_NAME
+
+    PROJECT_DIR=$(jq -r '.project_dir' "$PROFILE_JSON")
+    FRONTEND_NAME=$(jq -r '.frontend' "$PROFILE_JSON")
+    BACKEND_NAME=$(jq -r '.backend' "$PROFILE_JSON")
+    PROJECT_NAME=$(jq -r '.project_name' "$PROFILE_JSON")
 
     debug "setup_project_structure.project_dir = $PROJECT_DIR"
+    debug "setup_project_structure.frontend = $FRONTEND_NAME"
+    debug "setup_project_structure.backend = $BACKEND_NAME"
 
+    # Guard rails
+    [[ -z "$PROJECT_DIR" || "$PROJECT_DIR" == "null" ]] && {
+        error "project_dir missing in profile"
+        return 1
+    }
+
+    [[ -z "$FRONTEND_NAME" || "$FRONTEND_NAME" == "null" ]] && {
+        error "frontend missing in profile"
+        return 1
+    }
+
+    [[ -z "$BACKEND_NAME" || "$BACKEND_NAME" == "null" ]] && {
+        error "backend missing in profile"
+        return 1
+    }
+
+    # Handle overwrite safely
     if [[ -d "$PROJECT_DIR" ]]; then
         warn "Project directory already exists: $PROJECT_DIR"
-        debug "setup_project_structure error: Directory $PROJECT_DIR already exists, potential overwrite risk."
         read -rp "Do you want to overwrite it? (y/N): " confirm
+
         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-            error "Aborting project setup to avoid overwriting existing directory."
+            error "Aborting project setup"
             return 1
-        else
-            info "⚡ Overwriting existing directory..."
-            rm -rf "$PROJECT_DIR"
         fi
+
+        info "⚡ Removing existing directory..."
+        rm -rf "$PROJECT_DIR"
     fi
 
     mkdir -p "$PROJECT_DIR"
-    rsync -a --exclude='.git' "$TEMPLATE_PARENT_DIR/$TEMPLATE_FRONTEND/" "$PROJECT_DIR/$FRONTEND_NAME/"
-    rsync -a --exclude='.git' "$TEMPLATE_PARENT_DIR/$TEMPLATE_BACKEND/" "$PROJECT_DIR/$BACKEND_NAME/"
+
+    # Template copy (still constant, no globals involved)
+    rsync -a --exclude='.git' \
+        "$TEMPLATE_PARENT_DIR/$TEMPLATE_FRONTEND/" \
+        "$PROJECT_DIR/$FRONTEND_NAME/"
+
+    rsync -a --exclude='.git' \
+        "$TEMPLATE_PARENT_DIR/$TEMPLATE_BACKEND/" \
+        "$PROJECT_DIR/$BACKEND_NAME/"
+
     info "📁 Project structure created at $PROJECT_DIR"
 }
+
+# setup_project_structure() {
+
+#     # Setup project directory structure on the local machine and cloning the templates.
+#     # local base_dir
+#     # if [[ -n "$GITHUB_ORG" ]]; then
+#     #     base_dir="$SCRIPT_PARENT_DIR/$GITHUB_ORG"
+#     # else
+#     #     base_dir="$SCRIPT_PARENT_DIR"
+#     # fi
+
+#     # PROJECT_DIR="$base_dir/$PROJECT_NAME"
+
+#     PROJECT_DIR="$(jq -r '.project_dir' "$PROFILE_JSON")"
+
+#     # if [[ "$APP_PROFILE" ]]; then
+#     #     PROJECT_DIR="$base_dir/$PROJECT_NAME"
+#     # fi
+
+
+#     if [[ -d "$PROJECT_DIR" ]]; then
+#         warn "Project directory already exists: $PROJECT_DIR"
+#         debug "setup_project_structure error: Directory $PROJECT_DIR already exists, potential overwrite risk."
+#         read -rp "Do you want to overwrite it? (y/N): " confirm
+#         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+#             error "Aborting project setup to avoid overwriting existing directory."
+#             return 1
+#         else
+#             info "⚡ Overwriting existing directory..."
+#             rm -rf "$PROJECT_DIR"
+#         fi
+#     fi
+
+#     debug "setup_project_structure.project_dir = $PROJECT_DIR"
+
+#     mkdir -p "$PROJECT_DIR"
+#     rsync -a --exclude='.git' "$TEMPLATE_PARENT_DIR/$TEMPLATE_FRONTEND/" "$PROJECT_DIR/$FRONTEND_NAME/"
+#     rsync -a --exclude='.git' "$TEMPLATE_PARENT_DIR/$TEMPLATE_BACKEND/" "$PROJECT_DIR/$BACKEND_NAME/"
+#     info "📁 Project structure created at $PROJECT_DIR"
+# }
 
 # Refactor the app env, app-name paths to be dynamic from hard coded paths etc, start with Clone-Website-template then move onto setup-vps and setup-app
 
@@ -439,43 +653,65 @@ setup_project_structure() {
 init_frontend_repo() {
 
     info "Initating Frontend Repo"
+    dump_state
 
-    local API_BASE_PATH=""
-    
-    # If this is a routed app, use api_base_path from profile
+    PROFILE_TYPE="$(jq -r '.profile_type // ""' "$PROFILE_JSON")"
+
+    local domain_name=""
+    local route_base=""
+    local deploy_project_name=""
+
+    # -------------------------
+    # Resolve domain + routing
+    # -------------------------
     if [[ "$PROFILE_TYPE" == "apps" ]]; then
-        API_BASE_PATH=$(jq -r '.api_base_path // "/myapps/'"$PROJECT_NAME"'"' "$PROFILE_JSON")
-        debug "init_frontend_repo.api_base_path = ${API_BASE_PATH}"
-        DEPLOY_PROJECT_NAME="$(jq -r .parent_project "$PROFILE_JSON")"
-        debug "init_frontend_repo.deploy_project_name = ${DEPLOY_PROJECT_NAME}"
-        # Determine parent project domain
-        local parent_profile="$PROFILE_DIR/$(jq -r .parent_project "$PROFILE_JSON").json"
-        debug "init_frontend_repo.parent_profile = ${parent_profile}"
-        DOMAIN_NAME=$(jq -r '.domain // ""' "$parent_profile")
-        debug "init_frontend_repo.domain_name = ${DOMAIN_NAME}"
+        local parent_name
+        parent_name="$(jq -r '.parent_project' "$PROFILE_JSON")"
+
+        local parent_profile="$PROFILE_DIR/${parent_name}.json"
+
+        domain_name="$(jq -r '.domain // ""' "$parent_profile")"
+        deploy_project_name="$parent_name"
+
+        route_base="/myapps/$(jq -r '.project_name' "$PROFILE_JSON")"
+
+    else
+        domain_name="$(jq -r '.domain // ""' "$PROFILE_JSON")"
+        deploy_project_name="$(jq -r '.project_name' "$PROFILE_JSON")"
+        route_base=""
     fi
 
-    local STAGING_BASE="/opt/apps/${DEPLOY_PROJECT_NAME}-staging"
-    local PRODUCTION_BASE="/opt/apps/${DEPLOY_PROJECT_NAME}-production"
+    # -------------------------
+    # Build final API base
+    # -------------------------
+    local api_base="${domain_name}${route_base}"
 
-    local STAGING_DEPLOY_PATH="$STAGING_BASE"
-    local PRODUCTION_DEPLOY_PATH="$PRODUCTION_BASE"
+    debug "domain_name = $domain_name"
+    debug "route_base = $route_base"
+    debug "api_base = $api_base"
+    debug "deploy_project_name = $deploy_project_name"
 
-    if [[ "$PROFILE_TYPE" == "apps" ]]; then
-        STAGING_DEPLOY_PATH="$STAGING_BASE$API_BASE_PATH"
-        PRODUCTION_DEPLOY_PATH="$PRODUCTION_BASE$API_BASE_PATH"
-        debug "init_frontend_repo.staging_deploy_path = ${STAGING_DEPLOY_PATH}"
-        debug "init_frontend_repo.production_deploy_path = ${PRODUCTION_DEPLOY_PATH}"
-    fi
+    # -------------------------
+    # Deploy paths
+    # -------------------------
+    local STAGING_BASE="/opt/apps/${deploy_project_name}-staging"
+    local PRODUCTION_BASE="/opt/apps/${deploy_project_name}-production"
 
-    # guarding empty vars
-    [[ -z "$STAGING_DEPLOY_PATH" ]] && error "Staging deploy path is empty"
-    [[ -z "$PRODUCTION_DEPLOY_PATH" ]] && error "Production deploy path is empty"
-    
+    local STAGING_DEPLOY_PATH="${STAGING_BASE}${route_base}"
+    local PRODUCTION_DEPLOY_PATH="${PRODUCTION_BASE}${route_base}"
+
+    debug "staging = $STAGING_DEPLOY_PATH"
+    debug "production = $PRODUCTION_DEPLOY_PATH"
+
+    # -------------------------
+    # Repo path
+    # -------------------------
     local frontend_path="$PROJECT_DIR/$FRONTEND_NAME"
     cd "$frontend_path" || exit 1
 
-    # change workflow file paths
+    # -------------------------
+    # Workflow replacements
+    # -------------------------
     for file in .github/workflows/*.yml; do
         [[ -f "$file" ]] || continue
 
@@ -488,51 +724,49 @@ init_frontend_repo() {
             "$file"
     done
 
-
-    # Prepare token replacements
-    local sed_safe_domain
-    sed_safe_domain=$(printf '%s\n' "$DOMAIN_NAME" | sed 's/[][\/.*^$]/\\&/g')
-
-    local sed_safe_api_path
-    sed_safe_api_path=$(printf '%s\n' "$API_BASE_PATH" | sed 's/[][\/.*^$]/\\&/g')
+    # -------------------------
+    # Vite / env replacement
+    # -------------------------
+    local sed_safe_api_base
+    sed_safe_api_base=$(printf '%s\n' "$api_base" | sed 's/[\/&]/\\&/g')
 
     local frontend_name_lower
     frontend_name_lower=$(echo "$FRONTEND_NAME" | tr '[:upper:]' '[:lower:]')
 
-    # Replace tokens in files
-    sed -i "s/__DOMAIN__/${sed_safe_domain}/g" vite.config.js
+    # ONLY ONE SOURCE OF TRUTH
+    sed -i "s|__API_BASE__|$sed_safe_api_base|g" vite.config.js
     sed -i "s/\"name\": \".*\"/\"name\": \"${frontend_name_lower}\"/" package.json
-    sed -i "s/__FRONTEND_NAME__/${FRONTEND_NAME}/g" package-lock.json
 
+    # optional: only if still present in templates
     find . \( -name "*.jsx" -o -name "*.html" \) -type f \
         -exec sed -i "s/__PROJECT_NAME__/${PROJECT_NAME}/g" {} +
 
-    # Replace env tokens
     for file in .env.staging .env.production; do
         [[ -f "$file" ]] || continue
-        sed -i "s/__DOMAIN__/${sed_safe_domain}/g" "$file"
-        sed -i "s/__API_BASE_PATH__/${sed_safe_api_path}/g" "$file"
+        sed -i "s/__API_BASE__/$sed_safe_api_base/g" "$file"
     done
 
     GH_TARGET="${GITHUB_ORG:-$REPO_OWNER}"
 
     if [[ -z "$GH_TARGET" || -z "$FRONTEND_NAME" ]]; then
-        error "GH_TARGET or FRONTEND_NAME is empty! Cannot create repo."
+        error "GH_TARGET or FRONTEND_NAME is empty!"
         return 1
     fi
 
-    [[ "$SKIP_GIT" == true ]] && debug "escape point reached before git init." && return 0 
+    [[ "$DEBUG" == true ]] && debug "escape point reached before git init." && return 0
 
-    # Git init & commit
     git init -b main
     git config user.name "$REPO_OWNER"
     git config user.email "$EMAIL"
 
     git add .
-    git commit -m "Initial commit for frontend ${PROJECT_NAME} [skip ci]"
+    git commit -m "Initial commit for frontend ${PROJECT_NAME} [skip ci]" || {
+        error "Git commit failed"
+        return 1
+    }
 
-    # GitHub repo creation & push 
-    gh repo create "$GH_TARGET/$FRONTEND_NAME" --private --source="$frontend_path" --push
+    gh repo create "$GH_TARGET/$FRONTEND_NAME" --private --source="$frontend_path" --push \
+    || { error "GitHub repo creation failed (frontend)"; return 1; }
 
     for branch in dev stage; do
         git checkout -b "$branch"
@@ -541,6 +775,7 @@ init_frontend_repo() {
 
     git checkout main
     cd - >/dev/null
+
     success "Frontend repo initialized: $FRONTEND_NAME"
 }
 
@@ -548,18 +783,34 @@ init_frontend_repo() {
 init_backend_repo() {
     info "🚀 Initiating Backend Repo"
 
-    local API_BASE_PATH=""
-    local DEPLOY_PROJECT_NAME="$PROJECT_NAME"
-    local DOMAIN_NAME=""
+    dump_state
+
+    local domain_name=""
+    local route_base=""
+    local api_base=""
+    local deploy_project_name=""
 
     if [[ "$PROFILE_TYPE" == "apps" ]]; then
-        API_BASE_PATH=$(jq -r '.api_base_path // "/myapps/'"$PROJECT_NAME"'"' "$PROFILE_JSON")
-        DEPLOY_PROJECT_NAME="$(jq -r .parent_project "$PROFILE_JSON")"
-        DEPLOY_PROJECT_NAME="${DEPLOY_PROJECT_NAME}"
+        local parent_project
+        parent_project="$(jq -r '.parent_project' "$PROFILE_JSON")"
 
-        local parent_profile="$PROFILE_DIR/${DEPLOY_PROJECT_NAME}.json"
-        DOMAIN_NAME=$(jq -r '.domain // ""' "$parent_profile")
-    fi
+        local parent_profile="$PROFILE_DIR/${parent_project}.json"
+
+        domain_name="$(jq -r '.domain // ""' "$parent_profile")"
+        deploy_project_name="$parent_project"
+
+        route_base="/myapps/$(jq -r '.project_name' "$PROFILE_JSON")"
+    else
+        domain_name="$(jq -r '.domain // ""' "$PROFILE_JSON")"
+        deploy_project_name="$(jq -r '.project_name' "$PROFILE_JSON")"
+        route_base=""
+    fi  
+
+    api_base="${domain_name}${route_base}"
+
+    debug "domain_name = $domain_name"
+    debug "route_base = $route_base"
+    debug "api_base = $api_base"
 
     local backend_path="$PROJECT_DIR/$BACKEND_NAME"
     cd "$backend_path" || exit 1
@@ -600,10 +851,11 @@ init_backend_repo() {
     # ------------------------------------------------------------------
     # Replace tokens in code & config
     # ------------------------------------------------------------------
+    debug "API_BASE_PATH = ${API_BASE_PATH}"
+
     declare -A TOKEN_REPLACEMENTS=(
         ["__PROJECT_NAME__"]="$PROJECT_NAME"
-        ["__DOMAIN_NAME__"]="$DOMAIN_NAME"
-        ["__API_BASE_PATH__"]="$API_BASE_PATH"
+        ["__API_BASE__"]="$api_base"
     )
 
     local FILES_TO_REPLACE
@@ -622,53 +874,40 @@ init_backend_repo() {
     # Conditional UsePathBase
     # ------------------------------------------------------------------
     if [[ -n "$API_BASE_PATH" ]]; then
-        sed -i "/app.UsePathBase(__API_BASE_PATH__)/c\\
+        sed -i "/app.UsePathBase(__API_BASE__)/c\\
 if (!string.IsNullOrEmpty(builder.Configuration[\"BasePath\"])) {\\
     app.UsePathBase(builder.Configuration[\"BasePath\"]);\\
 }" Program.cs
     else
-        sed -i "/app.UsePathBase(__API_BASE_PATH__)/d" Program.cs
+        sed -i "/app.UsePathBase(__API_BASE__)/d" Program.cs
     fi
 
+    
     # ------------------------------------------------------------------
     # EF Core migrations
     # ------------------------------------------------------------------
-    local migrations_dir="$backend_path/Migrations"
-    info "🔎 Checking backend migrations for init..."
-
-    if [[ -d "$migrations_dir" ]] && find "$migrations_dir" -iname "*init*.cs" | grep -q .; then
-        success "Init migration already exists."
-    else
-        info "⚡ Creating init migration..."
-        dotnet ef migrations add init --context ApplicationDbContext --output-dir Migrations
-        success "Init migration created."
-    fi
-
-    # ------------------------------------------------------------------
-    # Database update
-    # ------------------------------------------------------------------
-    if grep -qi microsoft /proc/version &>/dev/null; then
-        info "⚡ Skipping database update on WSL"
-    else
-        info "⚡ Updating database..."
-        dotnet ef database update --context ApplicationDbContext
-        success "Database up-to-date."
-    fi
+    
+    migrations_dotnet "$backend_path"
 
     # ------------------------------------------------------------------
     # GitHub repo
     # ------------------------------------------------------------------
     GH_TARGET="${GITHUB_ORG:-$REPO_OWNER}"
     [[ -z "$GH_TARGET" || -z "$BACKEND_NAME" ]] && error "Missing repo info" && return 1
+    [[ "$DEBUG" == true ]] && debug "escape point reached before git init." && return 0
 
     git init -b main
     git config user.name "$REPO_OWNER"
     git config user.email "$EMAIL"
 
     git add .
-    git commit -m "Initial commit for backend ${PROJECT_NAME} [skip ci]"
+    git commit -m "Initial commit for backend ${PROJECT_NAME} [skip ci]" || {
+       error "Git commit failed"
+        return 1
+    }
 
-    gh repo create "$GH_TARGET/$BACKEND_NAME" --private --source="$backend_path" --push
+    gh repo create "$GH_TARGET/$BACKEND_NAME" --private --source="$backend_path" --push \
+    || { error "GitHub repo creation failed (backend)"; return 1; }
 
     for branch in dev stage; do
         git checkout -b "$branch"
@@ -758,6 +997,8 @@ detect_runtimes() {
 
 setup_project() {
 
+    validate_state || return 1
+    dump_state
     install_tools
     install_dotnet
     clone_templates
@@ -771,9 +1012,7 @@ setup_project() {
         success "GitHub CLI authenticated"    
     fi
 
-    REPO_OWNER=$(jq -r .repo_owner "$PROFILE_JSON")
-    EMAIL=$(jq -r .email "$PROFILE_JSON")
-    GITHUB_ORG=$(jq -r .github_org "$PROFILE_JSON")
+    load_profile "$PROFILE_JSON"
     GH_TARGET="${GITHUB_ORG:-$REPO_OWNER}"
 
     debug "setup_project.repo_owner = $REPO_OWNER"
@@ -788,6 +1027,7 @@ setup_routed_app() {
     # Applets that are bound to the route path of the domain website i.e saravasha.com/applet. Part of option 4
     
     debug "setup_routed_app.Profile_type  = $PROFILE_TYPE"
+    dump_state
     
     [[ "$PROFILE_TYPE" != "domain" ]] && {
         error "Select a parent domain profile. Only routed app profiles can be set up here."
@@ -807,19 +1047,19 @@ setup_routed_app() {
         return 1
     fi
 
-    DOMAIN_NAME=$(jq -r .domain "$parent_profile")
+    local effective_domain
+    effective_domain=$(jq -r .domain "$parent_profile")
 
     # Clone templates
-    clone_templates
+    # clone_templates
 
     # Setup project structure
     #setup_project_structure
 
     # Initialize frontend & backend
-    init_frontend_repo
-    init_backend_repo
+    # init_github_repos
 
-    success "🎉 Routed app [$PROJECT_NAME] setup complete under parent [$DOMAIN_NAME]"
+    success "🎉 Routed app [$PROJECT_NAME] setup complete under parent [$effective_domain]"
 }
 
 return_to_menu() { info "Returning to Main Menu."; exit 0; }
@@ -859,4 +1099,9 @@ while true; do
             5) require_profile && detect_runtimes ;;
             6) require_profile && setup_project ;;
             7) return_to_menu ;;
-;
+            *) warn "Invalid option, choose 1-${#options[@]}" ;;
+        esac
+        break
+    done
+    set -u
+done
