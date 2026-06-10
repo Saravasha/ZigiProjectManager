@@ -1309,10 +1309,10 @@ for APP in frontend backend; do
 
     APP_PATH="/opt/apps/${PROJECT_NAME}-${ENV}"
     KEY="${APP}-${ENV}"
-    PROJECT_ENV_NAME="${PROJECT_NAME}-${ENV}"
+    # PROJECT_ENV_NAME="${PROJECT_NAME}-${ENV}"
 
     domain="${DOMAIN_MAP[$KEY]}"
-    config_name="${PROJECT_ENV_NAME}-${APP}"
+    config_name="${PROJECT_NAME}-${APP}-${ENV}"
     config_path="/etc/nginx/sites-available/$config_name"
 
     cat > "$config_path" <<EOF
@@ -1524,7 +1524,7 @@ init_backup_dirs() {
 backup_get_assets() {
     info "Downloading assets from VPS (compressed)..."
 
-    REMOTE_PATH="/opt/actions-runners/backend-$ENVIRONMENT/_work/$PROFILE_NAME-backend/Uploads"
+    REMOTE_PATH="/opt/actions-runners/${REPO_NAME_2}-${ENVIRONMENT}/_work/${REPO_NAME_2}/Uploads"
     LOCAL_PATH="$BACKUP_DIR/Uploads"
     LOCAL_TAR="$BACKUP_DIR/Uploads.tar.gz"
 
@@ -1536,14 +1536,14 @@ backup_get_assets() {
     debug "Local tarball: $LOCAL_TAR"
 
     # Create compressed archive on VPS
-    ssh -i "$KEY_PATH" "$SSH_USER@$VPS_IP" bash <<EOF
+    ssh "$SSH_USER@$VPS_IP" bash <<EOF
 set -e
 cd "$REMOTE_PATH"
 tar -czf "/tmp/${PROFILE_NAME}_uploads_${ENVIRONMENT}.tar.gz" .
 EOF
 
     # Pull the tarball to local machine
-    rsync -avz -e "ssh -i $KEY_PATH" "$SSH_USER@$VPS_IP:/tmp/${PROFILE_NAME}_uploads_${ENVIRONMENT}.tar.gz" "$LOCAL_TAR"
+    rsync -avz -e ssh "$SSH_USER@$VPS_IP:/tmp/${PROFILE_NAME}_uploads_${ENVIRONMENT}.tar.gz" "$LOCAL_TAR"
     
     # Optionally decompress locally
     if confirm "⏳ Do you want to decompress the Assets?"; then
@@ -1556,7 +1556,7 @@ EOF
 
 
     # Cleanup remote tarball
-    ssh -i "$KEY_PATH" "$SSH_USER@$VPS_IP" rm -f "/tmp/${PROFILE_NAME}_uploads_${ENVIRONMENT}.tar.gz"
+    ssh "$SSH_USER@$VPS_IP" rm -f "/tmp/${PROFILE_NAME}_uploads_${ENVIRONMENT}.tar.gz"
     info "Removing remote tarball"
 
     success "Assets backed up to $LOCAL_PATH (compressed copy: $LOCAL_TAR)"
@@ -1567,7 +1567,7 @@ backup_push_assets() {
     info "Restoring assets to VPS from compressed backup..."
 
     LOCAL_TAR="$BACKUP_DIR/Uploads.tar.gz"
-    REMOTE_UPLOADS="/opt/actions-runners/backend-$ENVIRONMENT/_work/$PROFILE_NAME-backend/Uploads"
+    REMOTE_UPLOADS="/opt/actions-runners/${REPO_NAME_2}-${ENVIRONMENT}/_work/${REPO_NAME_2}/Uploads"
     REMOTE_TAR="/tmp/${PROFILE_NAME}_uploads_${ENVIRONMENT}.tar.gz"
 
     # Validate local backup exists
@@ -1577,10 +1577,10 @@ backup_push_assets() {
     fi
 
     info "📦 Uploading compressed assets to VPS..."
-    rsync -avz -e "ssh -i $KEY_PATH" "$LOCAL_TAR" "$SSH_USER@$VPS_IP:$REMOTE_TAR"
+    rsync -avz -e ssh "$LOCAL_TAR" "$SSH_USER@$VPS_IP:$REMOTE_TAR"
 
     info "📦 Decompressing assets on VPS..."
-    ssh -i "$KEY_PATH" "$SSH_USER@$VPS_IP" bash <<EOF
+    ssh "$SSH_USER@$VPS_IP" bash <<EOF
 set -e
 mkdir -p "$REMOTE_UPLOADS"
 tar -xzf "$REMOTE_TAR" -C "$REMOTE_UPLOADS"
@@ -1594,53 +1594,61 @@ EOF
 backup_get_db() {
     info "Dumping MSSQL database from Docker container..."
 
-    # Paths
-    VPS_CONTAINER_BACKUP="/tmp/${ENVIRONMENT}_${DB_NAME}.bak"       # Backup inside container
-    VPS_HOST_BACKUP="/tmp/${ENVIRONMENT}_${DB_NAME}.bak"            # Backup on VPS host
+    SQL_CONTAINER="sqlserver_${PROFILE_NAME,,}_${ENVIRONMENT}"
+
+    VPS_CONTAINER_BACKUP="/tmp/${ENVIRONMENT}_${DB_NAME}.bak"
+    VPS_HOST_BACKUP="/tmp/${ENVIRONMENT}_${DB_NAME}.bak"
     LOCAL_BAK="$BACKUP_DIR/db/${ENVIRONMENT}_${DB_NAME}.bak"
     LOCAL_BAK_GZ="$LOCAL_BAK.gz"
 
-    # === Step 1: Run SQL Server backup inside container ===
     info "📦 Running BACKUP DATABASE inside container on VPS via SSH..."
-    ssh -i "$KEY_PATH" "$SSH_USER@$VPS_IP" bash <<EOF
+
+    ssh "$SSH_USER@$VPS_IP" bash <<EOF
 set -e
 
-# Ensure container /tmp folder is accessible
-docker exec -u 0 ${PROFILE_NAME}_${ENVIRONMENT} mkdir -p /tmp
+SQL_CONTAINER="$SQL_CONTAINER"
+DB_NAME="$DB_NAME"
+DB_PASS="$DB_PASS"
+BACKUP_PATH="$VPS_CONTAINER_BACKUP"
+HOST_PATH="$VPS_HOST_BACKUP"
 
-# Run SQL Server backup inside container
-docker exec -u 0 ${PROFILE_NAME}_${ENVIRONMENT} /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$DB_PASS" \
-    -Q "BACKUP DATABASE [$DB_NAME] TO DISK = N'$VPS_CONTAINER_BACKUP' WITH INIT"
+# Ensure container backup folder exists
+docker exec -u 0 "\$SQL_CONTAINER" mkdir -p /var/opt/mssql/backups
 
-# Copy backup from container to VPS host
-docker cp "${DB}_${ENVIRONMENT}:${VPS_CONTAINER_BACKUP}" "$VPS_HOST_BACKUP"
+# Run backup inside container
+docker exec -u 0 "\$SQL_CONTAINER" /opt/mssql-tools/bin/sqlcmd \
+  -S localhost -U sa -P "\$DB_PASS" \
+  -Q "BACKUP DATABASE [\$DB_NAME] TO DISK = N'\$BACKUP_PATH' WITH INIT"
 
-# Confirm file exists on VPS host
-ls -lh "$VPS_HOST_BACKUP"
+# Copy from container filesystem to host
+docker cp "\$SQL_CONTAINER:\$BACKUP_PATH" "\$HOST_PATH"
+
+ls -lh "\$HOST_PATH"
+
 EOF
 
-    # === Step 2: Pull backup to local machine via rsync ===
-    info "📦 Pulling backup from VPS host to local machine..."
+    info "📦 Pulling backup from VPS..."
     mkdir -p "$BACKUP_DIR/db"
-    rsync -avz -e "ssh -i $KEY_PATH" "$SSH_USER@$VPS_IP:$VPS_HOST_BACKUP" "$LOCAL_BAK"
-    
-    # === Step 3: Compress locally ===
-    info "📦 Compressing backup locally..."
+
+    rsync -avz -e ssh \
+      "$SSH_USER@$VPS_IP:$VPS_CONTAINER_BACKUP" \
+      "$LOCAL_BAK"
+
     gzip -f "$LOCAL_BAK"
 
-    # === Step 4: Validate ===
     if [[ -s "$LOCAL_BAK_GZ" ]]; then
-        success "Database $DB_NAME dumped and saved to $LOCAL_BAK_GZ"
+        success "Database $DB_NAME dumped to $LOCAL_BAK_GZ"
     else
-        error "Backup failed — file is empty or missing at $LOCAL_BAK_GZ"
+        error "Backup failed"
     fi
 
-    # === Step 5: Cleanup VPS host temporary file ===
-    ssh -i "$KEY_PATH" "$SSH_USER@$VPS_IP" rm -f "$VPS_HOST_BACKUP"
+    ssh "$SSH_USER@$VPS_IP" rm -f "$VPS_CONTAINER_BACKUP"
 }
 
 backup_push_db() {
   info "Restoring MSSQL database to VPS Docker container..."
+  
+  SQL_CONTAINER="sqlserver_${PROFILE_NAME,,}_${ENVIRONMENT}"
 
   LOCAL_BAK_GZ="$BACKUP_DIR/db/${ENVIRONMENT}_${DB_NAME}.bak.gz"
   LOCAL_BAK="${LOCAL_BAK_GZ%.gz}"
@@ -1664,40 +1672,47 @@ backup_push_db() {
 
   # === Step 2: Push backup to VPS host ===
   info "📦 Pushing backup to VPS host via rsync..."
-  rsync -avz -e "ssh -i $KEY_PATH" "$LOCAL_BAK" "$SSH_USER@$VPS_IP:$VPS_HOST_BACKUP"
+  rsync -avz -e ssh "$LOCAL_BAK" "$SSH_USER@$VPS_IP:$VPS_HOST_BACKUP"
 
   # === Step 3: Restore backup inside container via SSH ===
   info "📦 Restoring database inside Docker container on VPS..."
   info "⚠️ Forcing database into SINGLE_USER mode (disconnecting active sessions)"
-  ssh -A -i "$KEY_PATH" "$SSH_USER@$VPS_IP" bash <<EOF
+  ssh "$SSH_USER@$VPS_IP" bash <<EOF
 set -e
 
+SQL_CONTAINER="$SQL_CONTAINER"
+DB_NAME="$DB_NAME"
+DB_PASS="$DB_PASS"
+VPS_HOST_BACKUP="$VPS_HOST_BACKUP"
+BACKUP_PATH="$VPS_CONTAINER_BACKUP"
+
 # Ensure container backup folder exists
-docker exec -u 0 sqlserver_$ENVIRONMENT mkdir -p /var/opt/mssql/backups
+docker exec -u 0 "\$SQL_CONTAINER" mkdir -p /var/opt/mssql/backups
 
 # Copy backup from host into container
-docker cp "$VPS_HOST_BACKUP" "sqlserver_$ENVIRONMENT:$VPS_CONTAINER_BACKUP"
+docker cp "\$VPS_HOST_BACKUP" "\$SQL_CONTAINER:\$BACKUP_PATH"
 
 # Restore database
-docker exec -u 0 sqlserver_$ENVIRONMENT /opt/mssql-tools/bin/sqlcmd \
-    -S localhost -U sa -P "$DB_PASS" -b -Q "
-ALTER DATABASE [$DB_NAME] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-RESTORE DATABASE [$DB_NAME] FROM DISK = N'$VPS_CONTAINER_BACKUP' WITH REPLACE;
-ALTER DATABASE [$DB_NAME] SET MULTI_USER;
+timeout 180 docker exec -u 0 "\$SQL_CONTAINER" /opt/mssql-tools/bin/sqlcmd \
+    -S localhost -U sa -P "\$DB_PASS" -b -Q "
+ALTER DATABASE [\$DB_NAME] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+RESTORE DATABASE [\$DB_NAME] FROM DISK = N'\$BACKUP_PATH' WITH REPLACE;
+ALTER DATABASE [\$DB_NAME] SET MULTI_USER;
 "
 
 # Confirm restoration
-docker exec -u 0 sqlserver_$ENVIRONMENT /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$DB_PASS" \
-    -Q "SELECT name, state_desc FROM sys.databases WHERE name = '$DB_NAME'"
+docker exec -u 0 "\$SQL_CONTAINER" /opt/mssql-tools/bin/sqlcmd \
+    -S localhost -U sa -P "\$DB_PASS" \
+    -Q "SELECT name, state_desc FROM sys.databases WHERE name = '\$DB_NAME'"
 
 # Cleanup temporary VPS host backup
-rm -f "$VPS_HOST_BACKUP"
+rm -f "\$VPS_HOST_BACKUP"
 EOF
 
   # Optional: cleanup local decompressed file
   rm -f "$LOCAL_BAK"
 
-  success "Database '$DB_NAME' restored successfully to $ENVIRONMENT container."
+  success "Database '$DB_NAME' restored successfully to $SQL_CONTAINER container."
 }
 
 # === Helper functions for Selecting Backup | Default or Select from List  ===
@@ -1754,8 +1769,23 @@ select_backup_source() {
     done
 }
 
+# === SSH Agent Helper functions ===
+start_ssh_agent() {
+    eval "$(ssh-agent -s)" >/dev/null
+    ssh-add "$KEY_PATH"
+}
+
+cleanup_ssh_agent() {
+    ssh-agent -k >/dev/null
+}
+
 # === 6. Execute ===
 execute_backup() {
+
+    start_ssh_agent
+
+    trap cleanup_ssh_agent EXIT
+
     if [[ "$BACKUP_ACTION" == "get" ]]; then
         init_backup_dirs  # create timestamped folder for backup
     else
