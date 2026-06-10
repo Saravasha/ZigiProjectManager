@@ -80,6 +80,23 @@ init_profile_state() {
 
 # === Helper Functions ===
 
+debug_snapshot() {
+  info "=== DEBUG SNAPSHOT (pre-SSH) ==="
+
+  echo "PROFILE_NAME=$PROFILE_NAME"
+  echo "VPS_IP=$VPS_IP"
+  echo "SSH_USER=$SSH_USER"
+  echo "BASE_DOMAIN=$BASE_DOMAIN"
+  echo "FRONTEND_REPO=$REPO_NAME_1"
+  echo "BACKEND_REPO=$REPO_NAME_2"
+  echo "NODE_MAJOR=$NODE_MAJOR"
+  echo "DOTNET=$DOTNET_SDK_VERSION"
+  echo "DB_PROD=$DB_NAME_PRODUCTION"
+  echo "DB_STAGING=$DB_NAME_STAGING"
+
+  echo "==============================="
+}
+
 confirm() {
     local r
     read -rp "⏳ $1 (y/n): " r || return 1
@@ -550,6 +567,10 @@ setup_vps() {
     debug "$NODE_MAJOR"
     debug "$DOTNET_SDK_VERSION"
 
+    debug_snapshot
+
+[[ "$DEBUG" == true ]] && debug "escape point reached before ssh operation on VPS." && return 0
+
 # === Step 5: SSH and Setup ===
 ssh -t -i "$KEY_PATH" "$SSH_USER@$VPS_IP" sudo -E bash -s -- \
   "$VPS_IP" "$PROD_PASS" "$STAGING_PASS" "$ADMIN_PASSWORD" "$ADMIN_PASSWORD_STAGING" \
@@ -658,14 +679,14 @@ cleanup_old_runners() {
 info "🔄 Updating package index..."
 apt update -y
 
-info "Install docker.io only if not installed"
+info "Install docker.io (idempotent)"
 if ! dpkg -s docker.io &>/dev/null; then
   apt install -y docker.io
 else
   info "docker.io already installed, skipping."
 fi
 
-info "Install nginx only if not installed"
+info "Install nginx (idempotent)"
 if ! dpkg -s nginx &>/dev/null; then
   apt install -y nginx
 else
@@ -684,7 +705,7 @@ else
   sed -i "/http {/a \    $LINE" "$NGINX_CONF"
 fi
 
-info "Install certbot and python3-certbot-nginx if missing"
+info "Install certbot and python3-certbot-nginx (idempotent)"
 for pkg in certbot python3-certbot-nginx ffmpeg curl apt-transport-https software-properties-common jq; do
   if ! dpkg -s $pkg &>/dev/null; then
     apt install -y $pkg
@@ -749,7 +770,7 @@ else
   info "Node.js $(node -v) already installed."
 fi
 
-info "🔄 Installing pm2 globally only if not installed"
+info "🔄 Installing pm2 globally (idempotent)"
 if ! command -v pm2 &>/dev/null; then
   info "Installing pm2 globally"
   npm install -g pm2
@@ -1026,7 +1047,7 @@ cleanup_old_runners
 for APP_LABEL in frontend backend; do
   for ENV in staging production; do
     REPO_NAME="${REPO_MAP[$APP_LABEL]}"
-    DIR="/opt/actions-runners/${APP_LABEL}-${ENV}"
+    DIR="/opt/actions-runners/${REPO_MAP[$APP_LABEL]}-${ENV}"
     CAP_ENV="$(tr '[:lower:]' '[:upper:]' <<< ${ENV:0:1})${ENV:1}"
     LABELS="${APP_LABEL},${CAP_ENV},vps"
 
@@ -1110,9 +1131,9 @@ mkdir -p /opt/apps
 
 for ENV in production staging; do
   REPO_NAME="$REPO_NAME_1"
-  RUNNER_WORK_DIR="/opt/actions-runners/frontend-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
+  RUNNER_WORK_DIR="/opt/actions-runners/${REPO_MAP[frontend]}-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
   DIST_DIR="${RUNNER_WORK_DIR}/dist"
-  TARGET_DIR="/opt/apps/frontend-${ENV}"
+  TARGET_DIR="/opt/apps/${REPO_NAME_1}-${ENV}"
 
   info "Checking build folder for frontend-${ENV}..."
 
@@ -1137,9 +1158,11 @@ for ENV in production staging; do
   APP="backend"
   REPO_VAR="REPO_NAME_2"
   REPO_NAME="${!REPO_VAR}"
-  APP_NAME="${APP}-${ENV}"
+  APP_NAME="${REPO_NAME}-${ENV}"
 
-  RUNNER_PATH="/opt/actions-runners/${APP}-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
+  RUNNER_PATH="/opt/actions-runners/${REPO_NAME}-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
+  info "RUNNER_PATH INITIATED: ${RUNNER_PATH}"
+
   DLL_PATH="${RUNNER_PATH}/WebAppBackend.dll"
 
   if [[ ! -f "$DLL_PATH" ]]; then
@@ -1235,15 +1258,29 @@ success "Workflows done!"
 
 info "🔧 Starting Nginx + Certbot setup"
 
-set -euo pipefail
+CERT_PROJECT_NAME="${PROFILE_NAME}"
 
-# Domains mapping
-declare -A REPO_ENV_PATHS=(
-  ["frontend-production"]="/opt/apps/frontend-production"
-  ["frontend-staging"]="/opt/apps/frontend-staging"
-  ["backend-production"]="backend"
-  ["backend-staging"]="backend"
-)
+warn "Cleaning ONLY certificates owned by project: $CERT_PROJECT_NAME"
+
+for KEY in "${!DOMAIN_MAP[@]}"; do
+  domain="${DOMAIN_MAP[$KEY]}"
+  cert_name="${domain//./_}"
+
+  # scope guard: only delete certs belonging to this deployment
+  if [[ "$cert_name" != *"$CERT_PROJECT_NAME"* ]]; then
+    debug "Skipping unrelated cert: $cert_name"
+    continue
+  fi
+
+  if certbot certificates | grep -q "Certificate Name: $cert_name"; then
+    warn "Deleting cert: $cert_name"
+    certbot delete --cert-name "$cert_name" --non-interactive || true
+  else
+    debug "Cert not found: $cert_name"
+  fi
+done
+
+set -euo pipefail
 
 declare -A BACKEND_PORTS=(
   ["backend-production"]=5002
@@ -1257,15 +1294,7 @@ declare -A DOMAIN_MAP=(
   ["backend-staging"]="admin-staging.$BASE_DOMAIN"
 )
 
-warn "Purging any orphan nginx configs and Let's Encrypt certificates."
 
-rm -rf /etc/nginx/sites-enabled/*
-rm -rf /etc/nginx/sites-available/*
-rm -rf /etc/letsencrypt/live/*
-rm -rf /etc/letsencrypt/archive/*
-rm -rf /etc/letsencrypt/renewal/*
-rm -f /etc/letsencrypt/options-ssl-nginx.conf \
-      /etc/letsencrypt/ssl-dhparams.pem
 
 debug "Install Nginx Certbot packages"
 apt update
@@ -1278,6 +1307,7 @@ info "Generating HTTP Nginx configs"
 for APP in frontend backend; do
   for ENV in production staging; do
 
+    APP_PATH="/opt/apps/${PROJECT_NAME}-${ENV}"
     KEY="${APP}-${ENV}"
     PROJECT_ENV_NAME="${PROJECT_NAME}-${ENV}"
 
@@ -1306,7 +1336,7 @@ EOF
     else
       cat >> "$config_path" <<EOF
     location / {
-        root /opt/apps/${REPO_NAME_1}-${ENV};
+        root ${APP_PATH};
         index index.html;
         try_files \$uri \$uri/ /index.html;
     }

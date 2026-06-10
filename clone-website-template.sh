@@ -833,7 +833,7 @@ init_backend_repo() {
         local DLL_PATH="$BACKEND_ROOT/WebAppBackend.dll"
 
         # PM2 app name
-        local PM2_APP_NAME="${DEPLOY_PROJECT_NAME}-backend-${ENV_NAME}"
+        local PM2_APP_NAME="${deploy_project_name}-backend-${ENV_NAME}"
         debug "init_backend_repo.deploy_project_name = ${DEPLOY_PROJECT_NAME}"
         debug "init_backend_repo.pm2_app_name = ${PM2_APP_NAME}"
         if [[ "$PROFILE_TYPE" == "apps" ]]; then

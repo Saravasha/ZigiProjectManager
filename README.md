@@ -1,4 +1,4 @@
-# 🌐 ZigiProjectManager - A Fullstack Website Template Setup
+# 🌐 ZigiProjectManager - A Fullstack Website Template Provisioner
 
 This repository contains automation scripts to bootstrap a fullstack website project using customizable frontend/backend templates, GitHub integration, and automated VPS deployment.
 
@@ -159,3 +159,12 @@ You can safely delete this file to reset configuration.
 - The tool intentionally avoids automation beyond PR creation to allow manual verification.
 
 - PRs are automatically opened from `dev` → `stage`.
+
+#### Line endings requirement:
+
+```
+All scripts must use LF (Unix) line endings.
+Windows CRLF will break execution in parts of the tooling pipeline.
+Run `dos2unix` on the scripts if needed.
+
+```
