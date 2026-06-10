@@ -51,22 +51,6 @@ mkdir -p "$CONFIG_DIR" "$SMTP_PROFILE_DIR" "$CLONE_PROFILE_DIR" "$BACKUP_BASE_DI
 # === Config State Handlers ===
 CONFIG_LOADED=false
 
-# auto_detect_config() {
-#     shopt -s nullglob
-#     CONFIG_FILES=("$APPS_CONFIG_DIR"/*.env)
-#     shopt -u nullglob
-
-#     if [[ ${#CONFIG_FILES[@]} -gt 0 ]]; then
-#         CONFIG_LOADED=true
-#         CONFIG_FILE=$(basename "${CONFIG_FILES[0]}")  # optional: pick first one
-#         source "$APPS_CONFIG_DIR/$CONFIG_FILE"
-#         info "Auto-detected config: $CONFIG_FILE"
-#     else
-#         CONFIG_LOADED=false
-#     fi
-# }
-# auto_detect_config
-
 init_profile_state() {
     : "${PROFILE_NAME:?PROFILE_NAME is not set}"
 
@@ -81,6 +65,27 @@ init_profile_state() {
 
 # === Helper Functions ===
 
+
+debug_snapshot() {
+  info "=== DEBUG SNAPSHOT (pre-SSH) ==="
+
+  debug "PROFILE_NAME=$PROFILE_NAME"
+  debug "VPS_IP=$VPS_IP"
+  debug "SSH_USER=$SSH_USER"
+  debug "BASE_DOMAIN=$BASE_DOMAIN"
+  debug "FRONTEND_REPO=$REPO_NAME_1"
+  debug "BACKEND_REPO=$REPO_NAME_2"
+  debug "NODE_MAJOR=$NODE_MAJOR"
+  debug "DOTNET=$DOTNET_SDK_VERSION"
+  debug "DB_NAME_PRODUCTION=$DB_NAME_PRODUCTION"
+  debug "DB_NAME_STAGING=$DB_NAME_STAGING"
+  debug "PROJECT_NAME=$PROJECT_NAME"
+  debug "SAFE_PROJECT_NAME=$SAFE_PROJECT_NAME"
+  debug "CHILD_PROFILE_NAME=$CHILD_PROFILE_NAME"
+
+  debug "==============================="
+}
+
 confirm() {
     local r
     read -rp "⏳ $1 (y/n): " r || return 1
@@ -88,164 +93,160 @@ confirm() {
 }
 
 # === Functions ===
-
 main_config() {
     info "Running Main Config loop..."
 
-    # Determine the config path: argument overrides default
-    local CONFIG_PATH="${1:-$APPS_CONFIG_DIR/${CONFIG_NAME}.env}"
-    debug "CONFIG_PATH: $CONFIG_PATH"
+    # =========================
+    # 1. Select child profile
+    # =========================
+    PROFILE_FILES=()
+    PROFILE_LABELS=()
 
-    if [[ -f "$CONFIG_PATH" ]]; then
-        # -------------------------------
-        # Existing config branch
-        # -------------------------------
-        success "📂 Loaded existing config from $CONFIG_PATH"
-        source "$CONFIG_PATH"
-        init_profile_state || return
-        CONFIG_LOADED=true
+    shopt -s nullglob
+    for file in "$CLONE_PROFILE_DIR"/*.json; do
+        parent=$(jq -r '.parent_project // empty' "$file")
+        [[ -n "$parent" ]] || continue
 
-    else
-        # -------------------------------
-        # New config branch
-        # -------------------------------
-        info "Creating new config at $CONFIG_PATH"
+        PROFILE_FILES+=("$file")
+        PROFILE_LABELS+=("$(basename "$file" .json) [Parent: $parent]")
+    done
+    shopt -u nullglob
 
-        KEY_NAME="id_vps_key"
-        KEY_PATH="$HOME/.ssh/$KEY_NAME"
-        PUB_KEY="${KEY_PATH}.pub"
+    [[ ${#PROFILE_FILES[@]} -gt 0 ]] || {
+        warn "No child profiles found"
+        return 1
+    }
 
-        # === Step: Select child clone-website-template profile ===
-        PROFILE_FILES=()
-        PROFILE_LABELS=()
-        shopt -s nullglob
-        for file in "$CLONE_PROFILE_DIR"/*.json; do
-            [[ -f "$file" ]] || continue
-            PARENT_PROJECT=$(jq -r '.parent_project // empty' "$file")
-            if [[ -n "$PARENT_PROJECT" ]]; then
-                PROFILE_FILES+=("$file")
-                PROFILE_NAME=$(basename "$file" .json)
-                PROFILE_LABELS+=("$PROFILE_NAME [Parent: $PARENT_PROJECT]")
-            fi
-        done
-        shopt -u nullglob
+    info "📂 Select child app:"
+    select CHOICE in "${PROFILE_LABELS[@]}"; do
+        [[ -n "$CHOICE" ]] && break
+        warn "Invalid selection"
+    done
 
-        if [[ ${#PROFILE_FILES[@]} -eq 0 ]]; then
-            warn "No child clone-website-template profiles found under $CLONE_PROFILE_DIR"
-            return 1
-        fi
+    local INDEX=$((REPLY - 1))
+    PROFILE_JSON="${PROFILE_FILES[$INDEX]}"
 
-        PROFILE_LABELS+=("❌ Cancel")
-        info "📂 Select a child clone-website-template profile:"
-        select CHOICE in "${PROFILE_LABELS[@]}"; do
-            if [[ "$CHOICE" == "❌ Cancel" ]]; then
-                warn "Cancelled."
-                return 1
-            elif [[ -n "$CHOICE" ]]; then
-                INDEX=$((REPLY - 1))
-                PROFILE_JSON="${PROFILE_FILES[$INDEX]}"
-                PROFILE_NAME=$(basename "$PROFILE_JSON" .json)
-                success "Selected child profile: $PROFILE_NAME (Parent: $(jq -r '.parent_project' "$PROFILE_JSON"))"
-                break
-            else
-                warn "Invalid selection. Try again."
-            fi
-        done
+    success "Selected: $(basename "$PROFILE_JSON" .json)"
 
-        PROJECT_NAME=$(jq -r '.project_name // empty' "$PROFILE_JSON")
-        API_BASE_PATH=$(jq -r '.api_base_path // empty' "$PROFILE_JSON")
-        PARENT_PROJECT_NAME=$(jq -r '.parent_project // empty' "$PROFILE_JSON")
-        CHILD_PROFILE_NAME="$PROJECT_NAME"
+    # =========================
+    # 2. Extract CHILD identity (source of truth)
+    # =========================
+    PROJECT_NAME=$(jq -r '.project_name // empty' "$PROFILE_JSON")
+    PARENT_PROJECT_NAME=$(jq -r '.parent_project // empty' "$PROFILE_JSON")
+    API_BASE_PATH=$(jq -r '.api_base_path // empty' "$PROFILE_JSON")
 
-        NEW_PROJECT_NAME="${PARENT_PROJECT_NAME}-${PROFILE_NAME}"
-        SAFE_PROJECT_NAME=$(echo "$NEW_PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]_-')
+    [[ -n "$PROJECT_NAME" ]] || {
+        error "project_name missing in child profile"
+        return 1
+    }
 
+    [[ -n "$PARENT_PROJECT_NAME" ]] || {
+        error "parent_project missing in child profile"
+        return 1
+    }
 
-        # db names
-        DB_NAME_PRODUCTION="${SAFE_PROJECT_NAME}_production"
-        DB_NAME_STAGING="${SAFE_PROJECT_NAME}_staging"
+    CHILD_PROFILE_NAME="$PROJECT_NAME"
+    PROFILE_NAME="$PROJECT_NAME"
 
-        if [[ -n "$PARENT_PROJECT_NAME" ]]; then
-            info "Child profile detected. Parent project: $PARENT_PROJECT_NAME"
-            PARENT_ENV_FILE="$CONFIG_DIR/${PARENT_PROJECT_NAME}.env"
-            [[ -f "$PARENT_ENV_FILE" ]] || { error "Parent .env not found: $PARENT_ENV_FILE"; return 1; }
-            info "Parent env found at $PARENT_ENV_FILE"
+    SAFE_PROJECT_NAME=$(echo "$PROJECT_NAME" \
+        | tr '[:upper:]' '[:lower:]' \
+        | tr -cd '[:alnum:]_-')
 
-            # Source parent environment
-            set -a
-            source "$PARENT_ENV_FILE"
-            set +a
+    DB_PROD="${SAFE_PROJECT_NAME}_production"
+    DB_STAGING="${SAFE_PROJECT_NAME}_staging"
 
-            PROFILE_NAME="$CHILD_PROFILE_NAME"
+    # IMPORTANT: DO NOT export yet (prevents leakage)
+    
+    # =========================
+    # 3. Load parent env (ISOLATED)
+    # =========================
+    local PARENT_ENV_FILE="$CONFIG_DIR/${PARENT_PROJECT_NAME}.env"
 
-            DOMAIN_FE_PROD="www.${BASE_DOMAIN}${API_BASE_PATH}"
-            DOMAIN_FE_STAGING="www.staging.${BASE_DOMAIN}${API_BASE_PATH}"
-            DOMAIN_BE_PROD="www.admin.${BASE_DOMAIN}${API_BASE_PATH}"
-            DOMAIN_BE_STAGING="www.admin-staging.${BASE_DOMAIN}${API_BASE_PATH}"
-            PRODUCTION_URL_TARGET="https://admin.${BASE_DOMAIN}${API_BASE_PATH}/"
+    [[ -f "$PARENT_ENV_FILE" ]] || {
+        error "Parent env missing: $PARENT_ENV_FILE"
+        return 1
+    }
 
-            info "This is a child app config (child of: $PARENT_PROJECT_NAME)"
-            info "✅ Parent project environment loaded, child API base path applied: $API_BASE_PATH"
-        else
-            error "Selected child profile '$PROJECT_NAME' has no parent_project. Cannot proceed."
-            return 1
-        fi
+    info "Loading parent env: $PARENT_ENV_FILE"
 
-        unset REPO_NAME_1 REPO_NAME_2
+    # isolate parent environment in subshell-like safety
+    set -a
+    source "$PARENT_ENV_FILE"
+    set +a
 
-        REPO_NAME_1=$(jq -r '.frontend' "$PROFILE_JSON")
-        REPO_NAME_2=$(jq -r '.backend' "$PROFILE_JSON")
+    # REMOVE any parent contamination that can overwrite child identity
+    unset DB_PROD DB_STAGING SAFE_PROJECT_NAME
 
+    # =========================
+    # 4. RE-APPLY CHILD AUTHORITY (FINAL TRUTH)
+    # =========================
+    SAFE_PROJECT_NAME=$(echo "$PROJECT_NAME" \
+        | tr '[:upper:]' '[:lower:]' \
+        | tr -cd '[:alnum:]_-')
 
+    DB_NAME_PRODUCTION="${SAFE_PROJECT_NAME}_production"
+    DB_NAME_STAGING="${SAFE_PROJECT_NAME}_staging"
 
-        # Hard validation
-        [[ -n "$REPO_NAME_1" ]] || { error "frontend repo missing in $PROFILE_JSON"; return 1; }
-        [[ -n "$REPO_NAME_2" ]] || { error "backend repo missing in $PROFILE_JSON"; return 1; }
+    # NOW export final truth only
+    export PROJECT_NAME PARENT_PROJECT_NAME API_BASE_PATH
+    export CHILD_PROFILE_NAME PROFILE_NAME
+    export SAFE_PROJECT_NAME DB_PROD DB_STAGING
 
-        info "📦 Getting the repos for the $REPO_NAME_1 and $REPO_NAME_2 applications..."
-        debug "📦 Frontend repo: $REPO_NAME_1"
-        debug "📦 Backend repo:  $REPO_NAME_2"
+    debug "DB_PROD=$DB_PROD"
+    debug "DB_STAGING=$DB_STAGING"
 
-        # Optional: Override passwords
-        if confirm "Do you want to manually override MSSQL or Admin passwords for this child app?"; then
-            read -s -p "🔐 STAGING MSSQL password: " STAGING_PASS; echo
-            read -s -p "🔐 PRODUCTION MSSQL password: " PROD_PASS; echo
-            read -s -p "🔐 Admin Password (Production): " ADMIN_PASSWORD; echo
-            read -s -p "🔐 Admin Password (Staging): " ADMIN_PASSWORD_STAGING; echo
-        else
-            info "⚡ Using parent project passwords for MSSQL and Admin."
-            info "Using base domain: $BASE_DOMAIN"
-        fi
+    # =========================
+    # 5. Derived values
+    # =========================
+    DOMAIN_FE_PROD="www.${BASE_DOMAIN}${API_BASE_PATH}"
+    DOMAIN_FE_STAGING="www.staging.${BASE_DOMAIN}${API_BASE_PATH}"
+    DOMAIN_BE_PROD="www.admin.${BASE_DOMAIN}${API_BASE_PATH}"
+    DOMAIN_BE_STAGING="www.admin-staging.${BASE_DOMAIN}${API_BASE_PATH}"
+    PRODUCTION_URL_TARGET="https://admin.${BASE_DOMAIN}${API_BASE_PATH}/"
 
-        info "Loading SMTP settings from parent env: $PARENT_ENV_FILE"
-        success "✅ Inherited SMTP profile from parent: $SMTP_PROFILE_NAME"
+    # =========================
+    # 6. Load repos (child ONLY)
+    # =========================
+    REPO_NAME_1=$(jq -r '.frontend // empty' "$PROFILE_JSON")
+    REPO_NAME_2=$(jq -r '.backend // empty' "$PROFILE_JSON")
 
-        # GitHub info
-        REPO_OWNER=$(jq -r .github_org "$PROFILE_JSON")
-        info "Skipping Github Username/Org, using clone-website-template profile"
-        GITHUB_PAT=$(jq -r .github_pat "$PROFILE_JSON")
-        info "Using GitHub PAT from profile"
-        debug "API_BASE_PATH: $API_BASE_PATH"
+    [[ -n "$REPO_NAME_1" ]] || { error "frontend repo missing"; return 1; }
+    [[ -n "$REPO_NAME_2" ]] || { error "backend repo missing"; return 1; }
 
-        [[ -n "$GITHUB_PAT" && "$GITHUB_PAT" != "null" ]] || { error "GitHub PAT missing"; return 1; }
-        : "${SSL_EMAIL:?SSL_EMAIL missing in parent env}"
+    info "📦 Repos: $REPO_NAME_1 / $REPO_NAME_2"
 
-        # --- Persist new config and oad the new config immediately ---
-        info "Persisting new config"
-        persist_config "$CONFIG_PATH"
-       
+    # =========================
+    # 7. Optional overrides
+    # =========================
+    if confirm "Override MSSQL/Admin passwords?"; then
+        read -s -p "STAGING MSSQL: " STAGING_PASS; echo
+        read -s -p "PRODUCTION MSSQL: " PROD_PASS; echo
+        read -s -p "ADMIN PROD: " ADMIN_PASSWORD; echo
+        read -s -p "ADMIN STAGING: " ADMIN_PASSWORD_STAGING; echo
     fi
 
-    # --- Proceed to VPS setup ---
-    if confirm "Do you want to continue to setting up the VPS with remote operations now?"; then
-        success "Proceeding with Setup VPS..."
-        debug "Local PROFILE_NAME='$PROFILE_NAME'"
-        setup_vps
+    # =========================
+    # 8. CONFIG NAME (deterministic)
+    # =========================
+    CONFIG_NAME="${PARENT_PROJECT_NAME}-${PROJECT_NAME}"
+    CONFIG_PATH="$APPS_CONFIG_DIR/${CONFIG_NAME}.env"
+
+    info "Config will be saved as: $CONFIG_NAME"
+
+    # =========================
+    # 9. Persist
+    # =========================
+    persist_config "$CONFIG_PATH"
+
+    # =========================
+    # 10. Continue
+    # =========================
+    if confirm "Continue to VPS setup?"; then
+        setup_app
     else
-        info "⏩ Returning to Main Menu."
+        info "⏩ Returning to menu"
     fi
 }
-
 
 persist_config() {
     local path="$1"
@@ -375,27 +376,12 @@ load_profile() {
 create_new_profile() {
     info "Create new child app config"
 
-    # Ask user for config name
-    read -rp "Enter a name for your new config (e.g. ExampleApp): " CONFIG_NAME
-    CONFIG_FILE="${CONFIG_NAME}.env"
-    CONFIG_PATH="$APPS_CONFIG_DIR/$CONFIG_FILE"
-
-    debug "CONFIG_NAME in main_config: $CONFIG_NAME"
-    debug "CONFIG_PATH in main_config: $CONFIG_PATH"
-
-    if [[ -f "$CONFIG_PATH" ]]; then
-        error "Config '$CONFIG_NAME' already exists in Apps."
-        return 1
-    fi
-
-    info "Creating new config: $CONFIG_NAME at $CONFIG_PATH"
-
     # Pass the path explicitly to main_config
-    main_config "$CONFIG_PATH"
+    main_config
 }
 
 
-setup_vps() {
+setup_app() {
 
     if ! $CONFIG_LOADED; then
       error "No config loaded. Please create or load a config first."
@@ -407,6 +393,23 @@ setup_vps() {
     info "Running VPS setup..."
     
     info "Skipping Certbot because we already did that step in VPS Setup..."
+
+    NODE_VERSION=$(jq -r '.runtimes.node // empty' "$PROFILE_JSON")
+    DOTNET_VERSION=$(jq -r '.runtimes.dotnet // empty' "$PROFILE_JSON")
+
+    [[ -z "$NODE_VERSION" ]] && NODE_VERSION="18"
+    [[ -z "$DOTNET_VERSION" ]] && DOTNET_VERSION="8.0"
+    NODE_VERSION="${NODE_VERSION#v}"
+    NODE_MAJOR="${NODE_VERSION%%.*}"
+    DOTNET_SDK_VERSION="${DOTNET_VERSION#net}"
+    
+    debug "$NODE_MAJOR"
+    debug "$DOTNET_SDK_VERSION"
+
+
+    debug_snapshot
+
+    [[ "$DEBUG" == true ]] && debug "escape point reached before ssh operation on VPS." && return 0
 
 # === Step 5: SSH and Setup ===
 ssh -t -i "$KEY_PATH" "$SSH_USER@$VPS_IP" sudo -E bash -s -- \

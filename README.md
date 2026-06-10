@@ -168,3 +168,7 @@ Windows CRLF will break execution in parts of the tooling pipeline.
 Run `dos2unix` on the scripts if needed.
 
 ```
+
+#### What remains to be done
+
+- Become a multi-tenant deployment system with hierarchical namespaces.

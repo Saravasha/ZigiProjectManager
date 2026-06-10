@@ -83,18 +83,18 @@ init_profile_state() {
 debug_snapshot() {
   info "=== DEBUG SNAPSHOT (pre-SSH) ==="
 
-  echo "PROFILE_NAME=$PROFILE_NAME"
-  echo "VPS_IP=$VPS_IP"
-  echo "SSH_USER=$SSH_USER"
-  echo "BASE_DOMAIN=$BASE_DOMAIN"
-  echo "FRONTEND_REPO=$REPO_NAME_1"
-  echo "BACKEND_REPO=$REPO_NAME_2"
-  echo "NODE_MAJOR=$NODE_MAJOR"
-  echo "DOTNET=$DOTNET_SDK_VERSION"
-  echo "DB_PROD=$DB_NAME_PRODUCTION"
-  echo "DB_STAGING=$DB_NAME_STAGING"
+  debug "PROFILE_NAME=$PROFILE_NAME"
+  debug "VPS_IP=$VPS_IP"
+  debug "SSH_USER=$SSH_USER"
+  debug "BASE_DOMAIN=$BASE_DOMAIN"
+  debug "FRONTEND_REPO=$REPO_NAME_1"
+  debug "BACKEND_REPO=$REPO_NAME_2"
+  debug "NODE_MAJOR=$NODE_MAJOR"
+  debug "DOTNET=$DOTNET_SDK_VERSION"
+  debug "DB_PROD=$DB_NAME_PRODUCTION"
+  debug "DB_STAGING=$DB_NAME_STAGING"
 
-  echo "==============================="
+  debug "==============================="
 }
 
 confirm() {
@@ -1293,8 +1293,6 @@ declare -A DOMAIN_MAP=(
   ["frontend-staging"]="staging.$BASE_DOMAIN"
   ["backend-staging"]="admin-staging.$BASE_DOMAIN"
 )
-
-
 
 debug "Install Nginx Certbot packages"
 apt update
