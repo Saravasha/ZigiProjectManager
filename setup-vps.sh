@@ -1311,7 +1311,6 @@ for APP in frontend backend; do
 
     APP_PATH="/opt/apps/${PROJECT_NAME}-${ENV}"
     KEY="${APP}-${ENV}"
-    # PROJECT_ENV_NAME="${PROJECT_NAME}-${ENV}"
 
     domain="${DOMAIN_MAP[$KEY]}"
     config_name="${PROJECT_NAME}-${APP}-${ENV}"

@@ -471,7 +471,7 @@ ssh -t -i "$KEY_PATH" "$SSH_USER@$VPS_IP" sudo -E bash -s -- \
   "$SMTP_PASSWORD" "$SMTP_FROM" "$SMTP_PORT" "$PROFILE_NAME" "$NODE_MAJOR" \
   "$DOTNET_SDK_VERSION" "$DEBUG" "$DEBUG_VERBOSE" "$DB_NAME_PRODUCTION" \
   "$DB_NAME_STAGING" "$SAFE_PROJECT_NAME" "$API_BASE_PATH" \
-  "$PARENT_PROJECT_NAME" "$CHILD_PROFILE_NAME" "$STAGING_BACKEND_PORT" \ "$PRODUCTION_BACKEND_PORT" "$STAGING_SQL_PORT" "$PRODUCTION_SQL_PORT" \
+  "$PARENT_PROJECT_NAME" "$CHILD_PROFILE_NAME" "$STAGING_BACKEND_PORT" \ "$PRODUCTION_BACKEND_PORT" "$STAGING_SQL_PORT" "$PRODUCTION_SQL_PORT" \ "$PROJECT_NAME" \
 <<'EOF_SCRIPT'
 
 
@@ -523,6 +523,9 @@ STAGING_BACKEND_PORT="${33}"
 PRODUCTION_BACKEND_PORT="${34}"
 STAGING_SQL_PORT="${35}"
 PRODUCTION_SQL_PORT="${36}"
+PROJECT_NAME="${37}"
+
+echo "$PROJECT_NAME"
 
 env | sort
 echo "DEBUG: All passed arguments"
@@ -545,11 +548,11 @@ debug "Done re-implementing Colorized echo and helper functions inside heredoc"
 info "💡 We are on the remote machine now!"
 
 debug "Setting environment file"
-PROJECT_NAME="${PARENT_PROJECT_NAME}-${PROFILE_NAME}"
-SAFE_REPO_OWNER=$(echo "$REPO_OWNER" | tr -cd '[:alnum:]_-')
-ENV_FILE="/etc/myapp_${SAFE_REPO_OWNER}-${PROFILE_NAME}.env"
 
-RUNNER_PREFIX="${SAFE_REPO_OWNER}-${PROFILE_NAME}"
+SAFE_REPO_OWNER=$(echo "$REPO_OWNER" | tr -cd '[:alnum:]_-')
+ENV_FILE="/etc/myapp_${SAFE_REPO_OWNER}-${CHILD_PROFILE_NAME}.env"
+
+RUNNER_PREFIX="${SAFE_REPO_OWNER}-${CHILD_PROFILE_NAME}"
 
 cleanup_old_runners() {
     info "Cleaning up GitHub Actions runners for this child app only: $RUNNER_PREFIX"
@@ -598,42 +601,6 @@ allow_if_not_exists() {
     info "⏭️ Rule already exists: $rule"
   fi
 }
-
-# SQL_PORT_START=1435
-# SQL_PORT_END=1535   # optional upper limit to prevent crazy high numbers
-
-# find_free_port() {
-#   local start=$1
-#   local end=$2
-#   local used_ports
-#   used_ports=$(ss -lnt | awk '{print $4}' | grep -oE '[0-9]+$' | sort -n)
-
-#   for ((p=start; p<=end; p++)); do
-#     if ! echo "$used_ports" | grep -qx "$p"; then
-#       echo "$p"
-#       return 0
-#     fi
-#   done
-
-#   return 1  # no free port found
-# }
-
-# STAGING_SQL_PORT=$(find_free_port $SQL_PORT_START $SQL_PORT_END)
-# if [[ -z "$STAGING_SQL_PORT" ]]; then
-#   echo "❌ No free staging port available!"
-#   exit 1
-# fi
-
-# PRODUCTION_SQL_PORT=$((STAGING_SQL_PORT + 1))
-# if (( PRODUCTION_SQL_PORT >= SQL_PORT_START && PRODUCTION_SQL_PORT <= SQL_PORT_END )); then
-#   if ss -lnt | awk '{print $4}' | grep -q ":$PRODUCTION_SQL_PORT$"; then
-#     echo "❌ No free production port available!"
-#     exit 1
-#   fi
-# else
-#   echo "❌ Production port exceeds limit!"
-#   exit 1
-# fi
 
 success "Allocated ports:"
 success "Staging: $STAGING_SQL_PORT"
@@ -1134,12 +1101,11 @@ info "Generate HTTP-only Nginx configs"
 for APP in frontend backend; do
   for ENV in production staging; do
 
-    APP_PATH="/opt/apps/${PROJECT_NAME}-${ENV}"
+    APP_PATH="/opt/apps/${PARENT_PROJECT_NAME}-${ENV}/myapps/${PROJECT_NAME}"
     KEY="${APP}-${ENV}"
-    # PROJECT_ENV_NAME="${PROJECT_NAME}-${ENV}"
 
     domain="${DOMAIN_MAP[$KEY]}"
-    config_name="${PROJECT_NAME}-${APP}-${ENV}"
+    config_name="${PARENT_PROJECT_NAME}-${PROJECT_NAME}-${APP}-${ENV}"
     config_path="/etc/nginx/sites-available/$config_name"
 
     cat > "$config_path" <<EOF

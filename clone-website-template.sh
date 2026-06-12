@@ -146,8 +146,12 @@ normalize_profile() {
     local tmp="$profile_file.tmp"
     local child_counter
     local child_index
-    local ports
-
+    local backend_ports
+    local sql_ports
+    local staging_backend_port
+    local production_backend_port
+    local staging_sql_port
+    local production_sql_port
 
     # Read current profile fields
     local project_name domain frontend backend parent_project api_base_path github_pat github_org repo_owner email profile_type project_dir runtimes
@@ -891,8 +895,8 @@ init_backend_repo() {
         parent_project="$(jq -r '.parent_project' "$PROFILE_JSON")"
 
         debug "PROFILE_JSON=$PROFILE_JSON"
-        backend_staging_port=$(jq -r '.ports.STAGING_BACKEND' "$PROFILE_JSON")
-        backend_production_port=$(jq -r '.ports.PRODUCTION_BACKEND' "$PROFILE_JSON")
+        backend_staging_port=$(jq -r '.backend_ports.STAGING' "$PROFILE_JSON")
+        backend_production_port=$(jq -r '.backend_ports.PRODUCTION' "$PROFILE_JSON")
 
         debug "backend_staging_port=$backend_staging_port"
         debug "backend_production_port=$backend_production_port"
