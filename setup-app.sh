@@ -82,6 +82,7 @@ debug_snapshot() {
   debug "PROJECT_NAME=$PROJECT_NAME"
   debug "SAFE_PROJECT_NAME=$SAFE_PROJECT_NAME"
   debug "CHILD_PROFILE_NAME=$CHILD_PROFILE_NAME"
+  debug "API_BASE_PATH=$API_BASE_PATH"
 
   debug "==============================="
 }
@@ -375,8 +376,6 @@ load_profile() {
 
 create_new_profile() {
     info "Create new child app config"
-
-    # Pass the path explicitly to main_config
     main_config
 }
 
@@ -413,12 +412,16 @@ setup_app() {
 
 # === Step 5: SSH and Setup ===
 ssh -t -i "$KEY_PATH" "$SSH_USER@$VPS_IP" sudo -E bash -s -- \
-  "$VPS_IP" "$PROD_PASS" "$STAGING_PASS" "$ADMIN_PASSWORD" "$ADMIN_PASSWORD_STAGING" \
-  "$PRODUCTION_URL_TARGET" "$REPO_OWNER" "$REPO_NAME_1" "$REPO_NAME_2" "$GITHUB_PAT" \
-  "$SSL_EMAIL" "$BASE_DOMAIN" "$DOMAIN_FE_PROD" "$DOMAIN_FE_STAGING" "$DOMAIN_BE_PROD" \
-  "$DOMAIN_BE_STAGING" "$SMTP_HOST" "$SMTP_USERNAME" "$SMTP_PASSWORD" "$SMTP_FROM" "$SMTP_PORT" \
-  "$PROFILE_NAME" "$API_BASE_PATH" "$DEBUG" "$DEBUG_VERBOSE" "$PARENT_PROJECT_NAME" "$DB_NAME_PRODUCTION" \
-  "$DB_NAME_STAGING" "$SAFE_PROJECT_NAME" <<'EOF_SCRIPT'
+  "$VPS_IP" "$PROD_PASS" "$STAGING_PASS" "$ADMIN_PASSWORD" \
+  "$ADMIN_PASSWORD_STAGING" "$PRODUCTION_URL_TARGET" \
+  "$REPO_OWNER" "$REPO_NAME_1" "$REPO_NAME_2" "$GITHUB_PAT" \
+  "$SSL_EMAIL" "$BASE_DOMAIN" "$DOMAIN_FE_PROD" "$DOMAIN_FE_STAGING" \
+  "$DOMAIN_BE_PROD" "$DOMAIN_BE_STAGING" "$SMTP_HOST" "$SMTP_USERNAME" \
+  "$SMTP_PASSWORD" "$SMTP_FROM" "$SMTP_PORT" "$PROFILE_NAME" "$NODE_MAJOR" \
+  "$DOTNET_SDK_VERSION" "$DEBUG" "$DEBUG_VERBOSE" "$DB_NAME_PRODUCTION" \
+  "$DB_NAME_STAGING" "$SAFE_PROJECT_NAME" "$API_BASE_PATH" \
+  "$PARENT_PROJECT_NAME" "$CHILD_PROFILE_NAME" \ 
+<<'EOF_SCRIPT'
 
 set -eu
 trap 'echo "❌ Setup failed at line $LINENO"; exit 1' ERR
@@ -450,13 +453,16 @@ SMTP_PASSWORD="${19}"
 SMTP_FROM="${20}"
 SMTP_PORT="${21}"
 PROFILE_NAME="${22}"
-API_BASE_PATH="${23:-}"
-DEBUG="${24:-false}"
-DEBUG_VERBOSE="${25:-false}"
-PARENT_PROJECT_NAME="${26}"
+NODE_MAJOR="${23:-}"
+DOTNET_SDK_VERSION="${24:-}"
+DEBUG="${25:-false}"
+DEBUG_VERBOSE="${26:-false}"
 DB_NAME_PRODUCTION="${27}"
 DB_NAME_STAGING="${28}"
 SAFE_PROJECT_NAME="${29}"
+API_BASE_PATH="${30:-}"
+PARENT_PROJECT_NAME="${31}"
+CHILD_PROFILE_NAME="${32}"
 
 env | sort
 echo "DEBUG: All passed arguments"
@@ -476,20 +482,11 @@ debug() {
 
 debug "Done re-implementing Colorized echo and helper functions inside heredoc"
 
-confirm() {
-    local r
-    read -rp "⏳ $1 (y/n): " r || return 1
-    [[ $r =~ ^[Yy]$ ]]
-}
-
 info "💡 We are on the remote machine now!"
 
-debug "PROFILE_NAME: $PROFILE_NAME"
-
-debug "Seting environment file"
+debug "Setting environment file"
 PROJECT_NAME="${PARENT_PROJECT_NAME}-${PROFILE_NAME}"
 SAFE_REPO_OWNER=$(echo "$REPO_OWNER" | tr -cd '[:alnum:]_-')
-# SAFE_PROJECT_NAME=$(echo "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]_-')
 ENV_FILE="/etc/myapp_${SAFE_REPO_OWNER}-${PROFILE_NAME}.env"
 
 RUNNER_PREFIX="${SAFE_REPO_OWNER}-${PROFILE_NAME}"
@@ -620,7 +617,7 @@ DOTNET_ENVIRONMENT="Production"
 ASPNETCORE_ENVIRONMENT="Production"
 EOF_ENV
 
-debug "SQL_STAGIN_PORT: $SQL_STAGING_PORT SQL_PRODUCTION_PORT: $SQL_PRODUCTION_PORT"
+debug "SQL_STAGING_PORT: $SQL_STAGING_PORT SQL_PRODUCTION_PORT: $SQL_PRODUCTION_PORT"
 
 chmod 600 "$ENV_FILE"
 chown root:root "$ENV_FILE"
@@ -642,8 +639,8 @@ systemctl daemon-reload
 debug "Source env file for current script run"
 source "$ENV_FILE"
 
-SQL_PRODUCTION_CONTAINER="sqlserver_${SAFE_PROJECT_NAME}_production"
-SQL_STAGING_CONTAINER="sqlserver_${SAFE_PROJECT_NAME}_staging"
+SQL_PRODUCTION_CONTAINER="$SQLSERVERVOL_NAME_PRODUCTION"
+SQL_STAGING_CONTAINER="$SQLSERVERVOL_NAME_STAGING"
 
 info "🐳 Starting MSSQL Docker containers..."
 
@@ -938,6 +935,8 @@ for ENV in production staging; do
   APP_NAME="${APP}-${ENV}"
 
   RUNNER_PATH="/opt/actions-runners/${APP}-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
+  info "RUNNER_PATH INITIATED: ${RUNNER_PATH}"
+
   DLL_PATH="${RUNNER_PATH}/WebAppBackend.dll"
 
   if [[ ! -f "$DLL_PATH" ]]; then
@@ -1035,6 +1034,50 @@ info "🔧 Starting Nginx setup"
 
 BASE_APP_DIR="/opt/apps/$API_BASE_PATH"
 # Domains mapping
+
+####### Make this into a backend_port generator
+
+SQL_PORT_START=1435
+SQL_PORT_END=1535   # optional upper limit to prevent crazy high numbers
+
+find_free_port() {
+  local start=$1
+  local end=$2
+  local used_ports
+  used_ports=$(ss -lnt | awk '{print $4}' | grep -oE '[0-9]+$' | sort -n)
+
+  for ((p=start; p<=end; p++)); do
+    if ! echo "$used_ports" | grep -qx "$p"; then
+      echo "$p"
+      return 0
+    fi
+  done
+
+  return 1  # no free port found
+}
+
+SQL_STAGING_PORT=$(find_free_port $SQL_PORT_START $SQL_PORT_END)
+if [[ -z "$SQL_STAGING_PORT" ]]; then
+  echo "❌ No free staging port available!"
+  exit 1
+fi
+
+SQL_PRODUCTION_PORT=$((SQL_STAGING_PORT + 1))
+if (( SQL_PRODUCTION_PORT >= SQL_PORT_START && SQL_PRODUCTION_PORT <= SQL_PORT_END )); then
+  if ss -lnt | awk '{print $4}' | grep -q ":$SQL_PRODUCTION_PORT$"; then
+    echo "❌ No free production port available!"
+    exit 1
+  fi
+else
+  echo "❌ Production port exceeds limit!"
+  exit 1
+fi
+
+echo "✅ Allocated ports:"
+echo "  Staging: $SQL_STAGING_PORT"
+echo "  Production: $SQL_PRODUCTION_PORT"
+
+########
 
 declare -A BACKEND_PORTS=(
   ["backend-production"]=5002

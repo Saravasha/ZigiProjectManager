@@ -100,10 +100,10 @@ migrations_dotnet() {
         return 1
     fi
 
-    [[ "$DEBUG" == true ]] && {
-        debug "Skipping dotnet migrations (DEBUG mode)"
-        return 0
-    }
+    # [[ "$DEBUG" == true ]] && {
+    #     debug "Skipping dotnet migrations (DEBUG mode)"
+    #     return 0
+    # }
      # ------------------------------------------------------------------
     # EF Core migrations
     # ------------------------------------------------------------------
@@ -140,9 +140,14 @@ normalize_api_path() {
     path=$(echo "$path" | tr '[:upper:]' '[:lower:]')
     echo "$path"
 }
+
 normalize_profile() {
     local profile_file="$1"
     local tmp="$profile_file.tmp"
+    local child_counter
+    local child_index
+    local ports
+
 
     # Read current profile fields
     local project_name domain frontend backend parent_project api_base_path github_pat github_org repo_owner email profile_type project_dir runtimes
@@ -158,6 +163,11 @@ normalize_profile() {
     email=$(jq -r '.email // empty' "$profile_file")
     profile_type=$(jq -r '.profile_type // "domain"' "$profile_file")
     project_dir=$(jq -r '.project_dir // empty' "$profile_file")
+    child_counter=$(jq -r '.child_counter // 0' "$profile_file")
+    child_index=$(jq -r '.child_index // empty' "$profile_file")
+    ports=$(jq '.ports // {}' "$profile_file")
+    staging_port=$(jq -r '.ports.STAGING_BACKEND // empty' "$profile_file")
+    production_port=$(jq -r '.ports.STAGING_PRODUCTION // empty' "$profile_file")
     runtimes=$(jq -r '.runtimes // {}' "$profile_file")
 
     # --- Compute missing fields ---
@@ -192,21 +202,27 @@ normalize_profile() {
       --arg email "$email" \
       --arg profile_type "$profile_type" \
       --arg project_dir "$project_dir" \
+      --arg child_counter "$child_counter" \
+      --arg child_index "$child_index" \
+      --argjson ports "$ports" \
       --argjson runtimes "$runtimes" \
       '{
-          project_name: $project_name,
-          domain: $domain,
-          frontend: $frontend,
-          backend: $backend,
-          parent_project: $parent_project,
-          api_base_path: $api_base_path,
-          github_pat: $github_pat,
-          github_org: $github_org,
-          repo_owner: $repo_owner,
-          email: $email,
-          profile_type: $profile_type,
-          project_dir: $project_dir,
-          runtimes: $runtimes
+        project_name: $project_name,
+        domain: $domain,
+        frontend: $frontend,
+        backend: $backend,
+        parent_project: $parent_project,
+        api_base_path: $api_base_path,
+        github_pat: $github_pat,
+        github_org: $github_org,
+        repo_owner: $repo_owner,
+        email: $email,
+        profile_type: $profile_type,
+        project_dir: $project_dir,
+        child_counter: $child_counter,
+        child_index: $child_index,
+        ports: $ports,
+        runtimes: $runtimes
       }' > "$tmp" && mv "$tmp" "$profile_file"
 
     chmod 600 "$profile_file"
@@ -255,10 +271,13 @@ create_new_profile() {
 
     # ✅ SINGLE SOURCE OF TRUTH
     PROJECT_DIR="$(generate_project_dir "$PROJECT_NAME" "$GITHUB_ORG")"
+    local child_counter=0
+    child_counter=$((child_counter))
 
     debug "frontend = $FRONTEND_NAME"
     debug "backend = $BACKEND_NAME"
     debug "project_dir = $PROJECT_DIR"
+    debug "child_counter = $child_counter"
 
     jq -n \
       --arg project_name "$PROJECT_NAME" \
@@ -271,6 +290,7 @@ create_new_profile() {
       --arg email "$EMAIL" \
       --arg profile_type "$PROFILE_TYPE" \
       --arg project_dir "$PROJECT_DIR" \
+      --arg child_counter "$child_counter" \
       '{
         project_name: $project_name,
         domain: $domain,
@@ -284,6 +304,7 @@ create_new_profile() {
         email: $email,
         profile_type: $profile_type,
         project_dir: $project_dir,
+        child_counter: $child_counter,
         runtimes: {}
       }' > "$profile_path"
 
@@ -307,6 +328,13 @@ create_routed_app() {
 
     read -rp "📦 App name: " APP_NAME
 
+    local app_profile_path="$PROFILE_DIR/$APP_NAME.json"
+    debug "app_profile_path=$app_profile_path"
+    if [[ -f "$app_profile_path" ]]; then
+        error "Profile '$APP_NAME' already exists."
+        return 1
+    fi
+
     FRONTEND_NAME="${PROJECT_NAME}-${APP_NAME}-frontend"
     BACKEND_NAME="${PROJECT_NAME}-${APP_NAME}-backend"
 
@@ -319,6 +347,8 @@ create_routed_app() {
 
     parent_profile="$PROFILE_DIR/${PROJECT_NAME}.json"
 
+
+
     if [[ ! -f "$parent_profile" ]]; then
         error "Parent profile not found: $parent_profile"
         return 1
@@ -330,6 +360,22 @@ create_routed_app() {
         error "Parent domain missing in profile"
         return 1
     fi
+    
+    # parent profile child number incrementer
+    child_counter="$(jq -r '.child_counter // 0' "$parent_profile")"
+
+    child_counter_index=$((child_counter + 1))
+
+    jq ".child_counter = $child_counter_index" "$parent_profile" > tmp \
+    && mv tmp "$parent_profile"
+
+
+    #child port assignment
+    base=5000
+    step=2
+    new_port=$(( base + (child_counter_index * step) +1))
+    staging_port=$((new_port))
+    production_port=$((staging_port + 1))
 
     jq -n \
     --arg project_name "$APP_NAME" \
@@ -344,6 +390,9 @@ create_routed_app() {
     --arg email "$EMAIL" \
     --arg profile_type "apps" \
     --arg project_dir "$APP_PROJECT_DIR" \
+    --arg child_index "$child_counter_index" \
+    --argjson staging_port "$staging_port" \
+    --argjson production_port "$production_port" \
     '{
         project_name: $project_name,
         domain: $domain,
@@ -357,12 +406,19 @@ create_routed_app() {
         email: $email,
         profile_type: $profile_type,
         project_dir: $project_dir,
+        child_index: $child_index,
+        ports: {
+            STAGING_BACKEND: $staging_port,
+            PRODUCTION_BACKEND: $production_port
+        },
         runtimes: {}
     }' > "$APP_PROFILE"
 
+    chmod 600 "$parent_profile"
     chmod 600 "$APP_PROFILE"
     success "Routed app profile saved: $APP_PROFILE"
 }
+
 build_profile_menu() {
 
     info "📁 Available profiles:"
@@ -489,6 +545,7 @@ load_profile() {
     EMAIL=$(jq -r .email "$profile")
     PROFILE_TYPE=$(jq -r .profile_type "$profile")
     PROJECT_DIR=$(jq -r .project_dir "$profile")
+    CHILD_COUNTER=$(jq -r .child_counter "$profile")
     RUNTIMES=$(jq -r '.runtimes // {}' "$profile")
 }
 
@@ -507,7 +564,13 @@ use_profile() {
         elif [[ -n "$choice" ]]; then
             PROFILE_JSON="${PROFILE_FILES[$((REPLY - 1))]}"
 
+            echo "BEFORE NORMALIZE:"
+            cat "$PROFILE_JSON"
+
             normalize_profile "$PROFILE_JSON"
+
+            echo "AFTER NORMALIZE:"
+            cat "$PROFILE_JSON"
 
             load_profile "$PROFILE_JSON"
 
@@ -607,48 +670,6 @@ setup_project_structure() {
     info "📁 Project structure created at $PROJECT_DIR"
 }
 
-# setup_project_structure() {
-
-#     # Setup project directory structure on the local machine and cloning the templates.
-#     # local base_dir
-#     # if [[ -n "$GITHUB_ORG" ]]; then
-#     #     base_dir="$SCRIPT_PARENT_DIR/$GITHUB_ORG"
-#     # else
-#     #     base_dir="$SCRIPT_PARENT_DIR"
-#     # fi
-
-#     # PROJECT_DIR="$base_dir/$PROJECT_NAME"
-
-#     PROJECT_DIR="$(jq -r '.project_dir' "$PROFILE_JSON")"
-
-#     # if [[ "$APP_PROFILE" ]]; then
-#     #     PROJECT_DIR="$base_dir/$PROJECT_NAME"
-#     # fi
-
-
-#     if [[ -d "$PROJECT_DIR" ]]; then
-#         warn "Project directory already exists: $PROJECT_DIR"
-#         debug "setup_project_structure error: Directory $PROJECT_DIR already exists, potential overwrite risk."
-#         read -rp "Do you want to overwrite it? (y/N): " confirm
-#         if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-#             error "Aborting project setup to avoid overwriting existing directory."
-#             return 1
-#         else
-#             info "⚡ Overwriting existing directory..."
-#             rm -rf "$PROJECT_DIR"
-#         fi
-#     fi
-
-#     debug "setup_project_structure.project_dir = $PROJECT_DIR"
-
-#     mkdir -p "$PROJECT_DIR"
-#     rsync -a --exclude='.git' "$TEMPLATE_PARENT_DIR/$TEMPLATE_FRONTEND/" "$PROJECT_DIR/$FRONTEND_NAME/"
-#     rsync -a --exclude='.git' "$TEMPLATE_PARENT_DIR/$TEMPLATE_BACKEND/" "$PROJECT_DIR/$BACKEND_NAME/"
-#     info "📁 Project structure created at $PROJECT_DIR"
-# }
-
-# Refactor the app env, app-name paths to be dynamic from hard coded paths etc, start with Clone-Website-template then move onto setup-vps and setup-app
-
 # === Function: Initialize Frontend Repo ===
 init_frontend_repo() {
 
@@ -680,6 +701,8 @@ init_frontend_repo() {
         deploy_project_name="$(jq -r '.project_name' "$PROFILE_JSON")"
         route_base=""
     fi
+
+        [[ "$DEBUG" == true ]] && debug "early escape point reached." && return 0
 
     # -------------------------
     # Build final API base
@@ -789,15 +812,26 @@ init_backend_repo() {
     local route_base=""
     local api_base=""
     local deploy_project_name=""
+    local backend_staging_port=5001
+    local backend_production_port=5002
 
     if [[ "$PROFILE_TYPE" == "apps" ]]; then
         local parent_project
         parent_project="$(jq -r '.parent_project' "$PROFILE_JSON")"
 
+        debug "PROFILE_JSON=$PROFILE_JSON"
+        backend_staging_port=$(jq -r '.ports.STAGING_BACKEND' "$PROFILE_JSON")
+        backend_production_port=$(jq -r '.ports.PRODUCTION_BACKEND' "$PROFILE_JSON")
+
+        debug "backend_staging_port=$backend_staging_port"
+        debug "backend_production_port=$backend_production_port"
+
         local parent_profile="$PROFILE_DIR/${parent_project}.json"
 
         domain_name="$(jq -r '.domain // ""' "$parent_profile")"
         deploy_project_name="$parent_project"
+
+
 
         route_base="/myapps/$(jq -r '.project_name' "$PROFILE_JSON")"
     else
@@ -805,6 +839,8 @@ init_backend_repo() {
         deploy_project_name="$(jq -r '.project_name' "$PROFILE_JSON")"
         route_base=""
     fi  
+
+    [[ "$DEBUG" == true ]] && debug "escape point reached before migrations." && return 0
 
     api_base="${domain_name}${route_base}"
 
@@ -814,6 +850,27 @@ init_backend_repo() {
 
     local backend_path="$PROJECT_DIR/$BACKEND_NAME"
     cd "$backend_path" || exit 1
+
+
+    # ------------------------------------------------------------------
+    # Appsettings token replacement (Backend Ports)
+    # ------------------------------------------------------------------
+
+    for file in ./appsettings*.json; do
+        [[ -f "$file" ]] || continue
+
+        local PORT
+        if [[ "$file" == *"appsettings.Production.json" ]]; then
+            PORT=$backend_production_port
+        elif [[ "$file" == *"appsettings.Staging.json" ]]; then
+            PORT=$backend_staging_port
+        fi
+
+        sed -i \
+            -e "s@__PORT__@$PORT@g" \
+            "$file"
+    done
+    
 
     # ------------------------------------------------------------------
     # Workflow token replacement (PM2 names, paths, backend name)
@@ -856,6 +913,7 @@ init_backend_repo() {
     declare -A TOKEN_REPLACEMENTS=(
         ["__PROJECT_NAME__"]="$PROJECT_NAME"
         ["__API_BASE__"]="$api_base"
+        ["__DOMAIN_NAME__"]="$domain_name"
     )
 
     local FILES_TO_REPLACE

@@ -619,8 +619,6 @@ DB_NAME_PRODUCTION="${28}"
 DB_NAME_STAGING="${29}"
 SAFE_PROJECT_NAME="${30}"
 
-
-
 info()    { echo -e "\033[1;34m[INFO]:🔍 $*\033[0m"; }
 warn()    { echo -e "\033[1;33m[WARN]:⚠️ $*\033[0m"; }
 error()   { echo -e "\033[1;31m[ERROR]:❌ $*\033[0m"; }
@@ -632,12 +630,6 @@ debug() {
 }
 
 debug "Done re-implementing Colorized echo and helper functions inside heredoc"
-
-confirm() {
-    local r
-    read -rp "⏳ $1 (y/n): " r || return 1
-    [[ $r =~ ^[Yy]$ ]]
-}
 
 info "💡 We are on the remote machine now!"
 
