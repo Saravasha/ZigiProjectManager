@@ -155,38 +155,6 @@ main_config() {
         warn "Skipping key setup. Make sure the key is already added to the VPS before continuing."
     fi
 
-    # === Step 4: Select clone-website profile ===
-    # Force profile selection for new configs
-    unset PROFILE_NAME  # ensure no previous value interferes
-
-    shopt -s nullglob
-    PROFILE_FILES=("$CLONE_PROFILE_DIR"/*.json)
-    shopt -u nullglob
-
-    PROFILE_OPTIONS=()
-    for file in "${PROFILE_FILES[@]}"; do
-        [[ -f "$file" ]] && PROFILE_OPTIONS+=("$(basename "$file" .json)")
-    done
-
-    if [[ ${#PROFILE_OPTIONS[@]} -eq 0 ]]; then
-        warn "No clone-website profiles found. Create one first."
-        return
-    fi
-
-    info "📂 Select a clone-website profile:"
-    select PROFILE_NAME in "${PROFILE_OPTIONS[@]}" "❌ Cancel"; do
-        if [[ "$REPLY" =~ ^[0-9]+$ ]] && [[ "$REPLY" -gt 0 && "$REPLY" -le "${#PROFILE_OPTIONS[@]}" ]]; then
-            success "Using profile: $PROFILE_NAME"
-            info "PROFILE_NAME=\"$PROFILE_NAME\"" >> "$CONFIG_PATH"
-            break
-        elif [[ "$PROFILE_NAME" == "❌ Cancel" ]]; then
-            warn "Cancelled."
-            return
-        else
-            warn "Invalid option."
-        fi
-    done
-
     # === Load repo names from JSON profile ===
     PROFILE_JSON="$CLONE_PROFILE_DIR/$PROFILE_NAME.json"
     REPO_NAME_1=$(jq -r .frontend "$PROFILE_JSON")
@@ -520,9 +488,53 @@ EOF
 
 create_new_profile() {
     info "Create new config"
-    read -rp "Enter a name for your new config (e.g. Example): " CONFIG_NAME
-    CONFIG_FILE="${CONFIG_NAME}.env"
-    info "Creating new config: $CONFIG_NAME"
+
+    shopt -s nullglob
+    PROFILE_FILES=("$CLONE_PROFILE_DIR"/*.json)
+    shopt -u nullglob
+
+    PROFILE_OPTIONS=()
+    FILTERED_PROFILE_FILES=()
+
+    for file in "${PROFILE_FILES[@]}"; do
+        [[ -f "$file" ]] || continue
+
+        profile_type=$(jq -r '.profile_type // "domain"' "$file")
+
+        if [[ "$profile_type" == "domain" ]]; then
+            FILTERED_PROFILE_FILES+=("$file")
+            PROFILE_OPTIONS+=("$(basename "$file" .json)")
+        fi
+    done
+
+    if [[ ${#PROFILE_OPTIONS[@]} -eq 0 ]]; then
+        warn "No clone-website profiles found."
+        return 1
+    fi
+
+    info "📂 Select a clone-website profile:"
+
+    select PROFILE_NAME in "${PROFILE_OPTIONS[@]}" "❌ Cancel"; do
+        if [[ "$PROFILE_NAME" == "❌ Cancel" ]]; then
+            warn "Cancelled."
+            return
+        fi
+
+        if [[ -n "$PROFILE_NAME" ]]; then
+            PROFILE_JSON="${FILTERED_PROFILE_FILES[$((REPLY - 1))]}"
+
+            CONFIG_NAME="$PROFILE_NAME"
+            CONFIG_FILE="${CONFIG_NAME}.env"
+
+            success "Using profile: $PROFILE_NAME"
+            success "Creating config: $CONFIG_FILE"
+
+            break
+        fi
+
+        warn "Invalid option."
+    done
+
     main_config
 }
 

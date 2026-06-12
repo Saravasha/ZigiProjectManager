@@ -165,9 +165,12 @@ normalize_profile() {
     project_dir=$(jq -r '.project_dir // empty' "$profile_file")
     child_counter=$(jq -r '.child_counter // 0' "$profile_file")
     child_index=$(jq -r '.child_index // empty' "$profile_file")
-    ports=$(jq '.ports // {}' "$profile_file")
-    staging_port=$(jq -r '.ports.STAGING_BACKEND // empty' "$profile_file")
-    production_port=$(jq -r '.ports.STAGING_PRODUCTION // empty' "$profile_file")
+    backend_ports=$(jq '.backend_ports // {}' "$profile_file")
+    sql_ports=$(jq '.sql_ports // {}' "$profile_file")
+    staging_backend_port=$(jq -r '.backend_ports.STAGING // empty' "$profile_file")
+    production_backend_port=$(jq -r '.backend_ports.PRODUCTION // empty' "$profile_file")
+    staging_sql_port=$(jq -r '.sql_ports.STAGING // empty' "$profile_file")
+    production_sql_port=$(jq -r '.sql_ports.PRODUCTION // empty' "$profile_file")
     runtimes=$(jq -r '.runtimes // {}' "$profile_file")
 
     # --- Compute missing fields ---
@@ -204,7 +207,8 @@ normalize_profile() {
       --arg project_dir "$project_dir" \
       --arg child_counter "$child_counter" \
       --arg child_index "$child_index" \
-      --argjson ports "$ports" \
+      --argjson backend_ports "$backend_ports" \
+      --argjson sql_ports "$sql_ports" \
       --argjson runtimes "$runtimes" \
       '{
         project_name: $project_name,
@@ -221,7 +225,9 @@ normalize_profile() {
         project_dir: $project_dir,
         child_counter: $child_counter,
         child_index: $child_index,
-        ports: $ports,
+        backend_ports: $backend_ports,
+        sql_ports: $sql_ports,
+
         runtimes: $runtimes
       }' > "$tmp" && mv "$tmp" "$profile_file"
 
@@ -257,11 +263,31 @@ create_new_profile() {
     read -rsp "🔑 GitHub PAT: " GITHUB_PAT; echo
 
     read -rp "🏢 Use GitHub Org? (y/n): " USE_ORG
-    if [[ "$USE_ORG" =~ ^[Yy]$ ]]; then
-        read -rp "🏢 Org name: " GITHUB_ORG
-    else
-        GITHUB_ORG=""
-    fi
+
+    case "${USE_ORG,,}" in
+        y|yes)
+            while true; do
+                read -rp "🏢 Org name: " GITHUB_ORG
+
+                # trim whitespace
+                GITHUB_ORG="${GITHUB_ORG#"${GITHUB_ORG%%[![:space:]]*}"}"
+                GITHUB_ORG="${GITHUB_ORG%"${GITHUB_ORG##*[![:space:]]}"}"
+
+                if [[ -n "$GITHUB_ORG" ]]; then
+                    break
+                fi
+
+                warn "Org name cannot be empty."
+            done
+            ;;
+        n|no|"")
+            GITHUB_ORG=""
+            ;;
+        *)
+            warn "Invalid input. Defaulting to 'no org'."
+            GITHUB_ORG=""
+            ;;
+    esac
 
     PROFILE_TYPE="domain"
     read -rp "🌐 Domain name (example.com): " DOMAIN_NAME
@@ -310,6 +336,8 @@ create_new_profile() {
 
     chmod 600 "$profile_path"
     success "Profile saved: $profile_path"
+    set_active_profile "$profile_path"
+
 }
 
 create_routed_app() {
@@ -369,13 +397,18 @@ create_routed_app() {
     jq ".child_counter = $child_counter_index" "$parent_profile" > tmp \
     && mv tmp "$parent_profile"
 
-
-    #child port assignment
-    base=5000
+    #base ports and increments
+    base_sql_port=1433
+    base_backend_port=5000
     step=2
-    new_port=$(( base + (child_counter_index * step) +1))
-    staging_port=$((new_port))
-    production_port=$((staging_port + 1))
+    #child sql server port assignment
+    new_sql_port=$(( base_sql_port + (child_counter_index * step)))
+    staging_sql_port=$((new_sql_port))
+    production_sql_port=$((staging_sql_port + 1))
+    #child backend port assignment
+    new_backend_port=$(( base_backend_port + (child_counter_index * step) +1))
+    staging_backend_port=$((new_backend_port))
+    production_backend_port=$((staging_backend_port + 1))
 
     jq -n \
     --arg project_name "$APP_NAME" \
@@ -391,8 +424,10 @@ create_routed_app() {
     --arg profile_type "apps" \
     --arg project_dir "$APP_PROJECT_DIR" \
     --arg child_index "$child_counter_index" \
-    --argjson staging_port "$staging_port" \
-    --argjson production_port "$production_port" \
+    --argjson staging_backend_port "$staging_backend_port" \
+    --argjson production_backend_port "$production_backend_port" \
+    --argjson staging_sql_port "$staging_sql_port" \
+    --argjson production_sql_port "$production_sql_port" \
     '{
         project_name: $project_name,
         domain: $domain,
@@ -407,17 +442,24 @@ create_routed_app() {
         profile_type: $profile_type,
         project_dir: $project_dir,
         child_index: $child_index,
-        ports: {
-            STAGING_BACKEND: $staging_port,
-            PRODUCTION_BACKEND: $production_port
+        backend_ports: {
+            STAGING: $staging_backend_port,
+            PRODUCTION: $production_backend_port
         },
+        sql_ports: {
+            STAGING: $staging_sql_port,
+            PRODUCTION: $production_sql_port
+        },
+
         runtimes: {}
     }' > "$APP_PROFILE"
 
     chmod 600 "$parent_profile"
     chmod 600 "$APP_PROFILE"
     success "Routed app profile saved: $APP_PROFILE"
+    set_active_profile "$APP_PROFILE"
 }
+
 
 build_profile_menu() {
 
@@ -549,6 +591,26 @@ load_profile() {
     RUNTIMES=$(jq -r '.runtimes // {}' "$profile")
 }
 
+set_active_profile() {
+    local profile="$1"
+
+    [[ -f "$profile" ]] || {
+        error "Profile not found: $profile"
+        return 1
+    }
+
+    PROFILE_JSON="$profile"
+
+    normalize_profile "$PROFILE_JSON"
+    load_profile "$PROFILE_JSON"
+
+    if [[ "$DEBUG" == true ]]; then
+        cat "$PROFILE_JSON"
+    fi
+
+    info "Using profile: ${PROJECT_NAME:-None}"
+}
+
 use_profile() {
     info "Select an existing profile"
 
@@ -562,15 +624,21 @@ use_profile() {
             info "Cancelled profile selection."
             return
         elif [[ -n "$choice" ]]; then
-            PROFILE_JSON="${PROFILE_FILES[$((REPLY - 1))]}"
+            set_active_profile "${PROFILE_FILES[$((REPLY - 1))]}"
 
-            echo "BEFORE NORMALIZE:"
-            cat "$PROFILE_JSON"
+            profile_name=$(jq -r .project_name "$PROFILE_JSON")
+            
+            debug "Profile: $profile_name - BEFORE NORMALIZE:"
+            if [[ "$DEBUG" == true ]]; then  
+                cat "$PROFILE_JSON"
+            fi
 
             normalize_profile "$PROFILE_JSON"
 
-            echo "AFTER NORMALIZE:"
-            cat "$PROFILE_JSON"
+            debug "Profile: $profile_name - AFTER NORMALIZE:"
+            if [[ "$DEBUG" == true ]]; then
+                cat "$PROFILE_JSON"
+            fi
 
             load_profile "$PROFILE_JSON"
 
@@ -702,7 +770,7 @@ init_frontend_repo() {
         route_base=""
     fi
 
-        [[ "$DEBUG" == true ]] && debug "early escape point reached." && return 0
+    # [[ "$DEBUG" == true ]] && debug "early escape point reached." && return 0
 
     # -------------------------
     # Build final API base
@@ -750,8 +818,11 @@ init_frontend_repo() {
     # -------------------------
     # Vite / env replacement
     # -------------------------
+    local api_base_lower
+    api_base_lower=$(echo "$api_base" | tr '[:upper:]' '[:lower:]')
+
     local sed_safe_api_base
-    sed_safe_api_base=$(printf '%s\n' "$api_base" | sed 's/[\/&]/\\&/g')
+    sed_safe_api_base=$(printf '%s\n' "$api_base_lower" | sed 's/[\/&]/\\&/g')
 
     local frontend_name_lower
     frontend_name_lower=$(echo "$FRONTEND_NAME" | tr '[:upper:]' '[:lower:]')
@@ -840,8 +911,6 @@ init_backend_repo() {
         route_base=""
     fi  
 
-    [[ "$DEBUG" == true ]] && debug "escape point reached before migrations." && return 0
-
     api_base="${domain_name}${route_base}"
 
     debug "domain_name = $domain_name"
@@ -871,7 +940,6 @@ init_backend_repo() {
             "$file"
     done
     
-
     # ------------------------------------------------------------------
     # Workflow token replacement (PM2 names, paths, backend name)
     # ------------------------------------------------------------------
@@ -944,7 +1012,8 @@ if (!string.IsNullOrEmpty(builder.Configuration[\"BasePath\"])) {\\
     # ------------------------------------------------------------------
     # EF Core migrations
     # ------------------------------------------------------------------
-    
+    [[ "$DEBUG" == true ]] && debug "escape point reached before migrations." && return 0
+
     migrations_dotnet "$backend_path"
 
     # ------------------------------------------------------------------
@@ -952,6 +1021,7 @@ if (!string.IsNullOrEmpty(builder.Configuration[\"BasePath\"])) {\\
     # ------------------------------------------------------------------
     GH_TARGET="${GITHUB_ORG:-$REPO_OWNER}"
     [[ -z "$GH_TARGET" || -z "$BACKEND_NAME" ]] && error "Missing repo info" && return 1
+
     [[ "$DEBUG" == true ]] && debug "escape point reached before git init." && return 0
 
     git init -b main
@@ -1120,6 +1190,37 @@ setup_routed_app() {
     success "🎉 Routed app [$PROJECT_NAME] setup complete under parent [$effective_domain]"
 }
 
+create_profile_menu() {
+
+    while true; do
+        
+        info "Choose a profile type"
+        echo "1) Domain Website"
+        echo "2) Routed Applet"
+        echo "3) ❌ Cancel"
+
+        read -rp "Choose an option: " choice
+
+        case "$choice" in
+            1)
+                create_new_profile
+                return
+                ;;
+            2)
+                require_profile && create_routed_app
+                return
+                ;;
+            3)
+                return
+                ;;
+            *)
+                warn "Invalid selection."
+                ;;
+        esac
+    done
+}
+
+
 return_to_menu() { info "Returning to Main Menu."; exit 0; }
 
 # === Header Menu UI ===
@@ -1137,7 +1238,7 @@ print_header() {
     printf "\n"
 }
 # === Menu Items ===
-options=("Create new profile" "Remove a profile" "Use existing profile" "Create Routed App" "Detect Runtimes" "Setup Project from Profile" $'\033[1;33mReturn to Menu\033[0m')
+options=("Create new profile" "Remove a profile" "Use existing profile" "Detect Runtimes" "Setup Project from Profile" $'\033[1;33mReturn to Menu\033[0m')
 
 # === Main Menu Loop ===
 while true; do
@@ -1150,13 +1251,12 @@ while true; do
     set +u
     select opt in "${options[@]}"; do
         case $REPLY in
-            1) create_new_profile ;;
+            1) create_profile_menu ;;
             2) remove_profile ;;
             3) use_profile ;;
-            4) require_profile && create_routed_app ;;
-            5) require_profile && detect_runtimes ;;
-            6) require_profile && setup_project ;;
-            7) return_to_menu ;;
+            4) require_profile && detect_runtimes ;;
+            5) require_profile && setup_project ;;
+            6) return_to_menu ;;
             *) warn "Invalid option, choose 1-${#options[@]}" ;;
         esac
         break

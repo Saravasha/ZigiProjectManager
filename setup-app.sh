@@ -68,22 +68,53 @@ init_profile_state() {
 
 debug_snapshot() {
   info "=== DEBUG SNAPSHOT (pre-SSH) ==="
-
+  # clone-website profile reference
   debug "PROFILE_NAME=$PROFILE_NAME"
-  debug "VPS_IP=$VPS_IP"
-  debug "SSH_USER=$SSH_USER"
-  debug "BASE_DOMAIN=$BASE_DOMAIN"
+  echo
   debug "FRONTEND_REPO=$REPO_NAME_1"
   debug "BACKEND_REPO=$REPO_NAME_2"
-  debug "NODE_MAJOR=$NODE_MAJOR"
-  debug "DOTNET=$DOTNET_SDK_VERSION"
+  debug "PROJECT_NAME=$PROJECT_NAME"
+  debug "CHILD_PROFILE_NAME=$CHILD_PROFILE_NAME"
+  debug "PARENT_PROJECT_NAME=$PARENT_PROJECT_NAME"
+  debug "KEY_NAME=$KEY_NAME"
+  debug "KEY_PATH=$KEY_PATH"
+  debug "PUB_KEY=$PUB_KEY"
+  debug "VPS_IP=$VPS_IP"
+  debug "SSH_USER=$SSH_USER"
+  debug "STAGING_PASS=$STAGING_PASS"
+  debug "PROD_PASS=$PROD_PASS"
+  debug "BASE_DOMAIN=$BASE_DOMAIN"
+  debug "DOMAIN_FE_PROD=$DOMAIN_FE_PROD"
+  debug "DOMAIN_FE_STAGING=$DOMAIN_FE_STAGING"
+  debug "DOMAIN_BE_PROD=$DOMAIN_BE_PROD"
+  debug "DOMAIN_BE_STAGING=$DOMAIN_BE_STAGING"
+  debug "PRODUCTION_URL_TARGET=$PRODUCTION_URL_TARGET"
+  debug "ADMIN_PASSWORD=$ADMIN_PASSWORD"
+  debug "ADMIN_PASSWORD_STAGING=$ADMIN_PASSWORD_STAGING"
+  debug "REPO_OWNER=$REPO_OWNER"
+  debug "REPO_NAME_1=$REPO_NAME_1"
+  debug "REPO_NAME_2=$REPO_NAME_2"
+  debug "GITHUB_PAT=$GITHUB_PAT"
+  debug "SSL_EMAIL=$SSL_EMAIL"
+  debug "API_BASE_PATH=$API_BASE_PATH"
   debug "DB_NAME_PRODUCTION=$DB_NAME_PRODUCTION"
   debug "DB_NAME_STAGING=$DB_NAME_STAGING"
-  debug "PROJECT_NAME=$PROJECT_NAME"
   debug "SAFE_PROJECT_NAME=$SAFE_PROJECT_NAME"
-  debug "CHILD_PROFILE_NAME=$CHILD_PROFILE_NAME"
-  debug "API_BASE_PATH=$API_BASE_PATH"
-
+  debug "STAGING_BACKEND_PORT=$STAGING_BACKEND_PORT"
+  debug "PRODUCTION_BACKEND_PORT=$PRODUCTION_BACKEND_PORT"
+  debug "STAGING_SQL_PORT=$STAGING_SQL_PORT"
+  debug "PRODUCTION_SQL_PORT=$PRODUCTION_SQL_PORT"
+  echo
+  debug "NODE_MAJOR=$NODE_MAJOR"
+  debug "DOTNET=$DOTNET_SDK_VERSION"
+  echo
+  # SMTP Profile reference
+  debug "SMTP_PROFILE_NAME=$SMTP_PROFILE_NAME"
+  debug "SMTP_HOST=$SMTP_HOST"
+  debug "SMTP_USERNAME=$SMTP_USERNAME"
+  debug "SMTP_PASSWORD=$SMTP_PASSWORD"
+  debug "SMTP_FROM=$SMTP_FROM"
+  debug "SMTP_PORT=$SMTP_PORT"
   debug "==============================="
 }
 
@@ -130,11 +161,30 @@ main_config() {
     success "Selected: $(basename "$PROFILE_JSON" .json)"
 
     # =========================
+    # *. Extract Backend Ports
+    # =========================
+    STAGING_BACKEND_PORT=$(jq -r '.backend_ports.STAGING // empty' "$PROFILE_JSON")
+    PRODUCTION_BACKEND_PORT=$(jq -r '.backend_ports.PRODUCTION // empty' "$PROFILE_JSON")
+
+    # =========================
+    # *. Extract Backend Ports
+    # =========================
+    STAGING_SQL_PORT=$(jq -r '.sql_ports.STAGING // empty' "$PROFILE_JSON")
+    PRODUCTION_SQL_PORT=$(jq -r '.sql_ports.PRODUCTION // empty' "$PROFILE_JSON")
+
+    debug "STAGING_BACKEND_PORT=$STAGING_BACKEND_PORT"
+    debug "PRODUCTION_BACKEND_PORT=$PRODUCTION_BACKEND_PORT"
+
+    debug "STAGING_SQL_PORT=$STAGING_SQL_PORT"
+    debug "PRODUCTION_SQL_PORT=$PRODUCTION_SQL_PORT"
+
+    # =========================
     # 2. Extract CHILD identity (source of truth)
     # =========================
     PROJECT_NAME=$(jq -r '.project_name // empty' "$PROFILE_JSON")
     PARENT_PROJECT_NAME=$(jq -r '.parent_project // empty' "$PROFILE_JSON")
     API_BASE_PATH=$(jq -r '.api_base_path // empty' "$PROFILE_JSON")
+
 
     [[ -n "$PROJECT_NAME" ]] || {
         error "project_name missing in child profile"
@@ -152,9 +202,6 @@ main_config() {
     SAFE_PROJECT_NAME=$(echo "$PROJECT_NAME" \
         | tr '[:upper:]' '[:lower:]' \
         | tr -cd '[:alnum:]_-')
-
-    DB_PROD="${SAFE_PROJECT_NAME}_production"
-    DB_STAGING="${SAFE_PROJECT_NAME}_staging"
 
     # IMPORTANT: DO NOT export yet (prevents leakage)
     
@@ -175,8 +222,9 @@ main_config() {
     source "$PARENT_ENV_FILE"
     set +a
 
+
     # REMOVE any parent contamination that can overwrite child identity
-    unset DB_PROD DB_STAGING SAFE_PROJECT_NAME
+    unset SAFE_PROJECT_NAME
 
     # =========================
     # 4. RE-APPLY CHILD AUTHORITY (FINAL TRUTH)
@@ -191,10 +239,8 @@ main_config() {
     # NOW export final truth only
     export PROJECT_NAME PARENT_PROJECT_NAME API_BASE_PATH
     export CHILD_PROFILE_NAME PROFILE_NAME
-    export SAFE_PROJECT_NAME DB_PROD DB_STAGING
+    export SAFE_PROJECT_NAME PRODUCTION_BACKEND_PORT STAGING_BACKEND_PORT STAGING_SQL_PORT PRODUCTION_SQL_PORT
 
-    debug "DB_PROD=$DB_PROD"
-    debug "DB_STAGING=$DB_STAGING"
 
     # =========================
     # 5. Derived values
@@ -279,6 +325,11 @@ API_BASE_PATH="$API_BASE_PATH"
 DB_NAME_PRODUCTION="$DB_NAME_PRODUCTION"
 DB_NAME_STAGING="$DB_NAME_STAGING"
 SAFE_PROJECT_NAME="$SAFE_PROJECT_NAME"
+STAGING_BACKEND_PORT="$STAGING_BACKEND_PORT"
+PRODUCTION_BACKEND_PORT="$PRODUCTION_BACKEND_PORT"
+STAGING_SQL_PORT="$STAGING_SQL_PORT"
+PRODUCTION_SQL_PORT="$PRODUCTION_SQL_PORT"
+
 
 # clone-website profile reference
 PROFILE_NAME="$PROFILE_NAME"
@@ -420,8 +471,13 @@ ssh -t -i "$KEY_PATH" "$SSH_USER@$VPS_IP" sudo -E bash -s -- \
   "$SMTP_PASSWORD" "$SMTP_FROM" "$SMTP_PORT" "$PROFILE_NAME" "$NODE_MAJOR" \
   "$DOTNET_SDK_VERSION" "$DEBUG" "$DEBUG_VERBOSE" "$DB_NAME_PRODUCTION" \
   "$DB_NAME_STAGING" "$SAFE_PROJECT_NAME" "$API_BASE_PATH" \
-  "$PARENT_PROJECT_NAME" "$CHILD_PROFILE_NAME" \ 
+  "$PARENT_PROJECT_NAME" "$CHILD_PROFILE_NAME" "$STAGING_BACKEND_PORT" \ "$PRODUCTION_BACKEND_PORT" "$STAGING_SQL_PORT" "$PRODUCTION_SQL_PORT" \
 <<'EOF_SCRIPT'
+
+
+
+
+
 
 set -eu
 trap 'echo "❌ Setup failed at line $LINENO"; exit 1' ERR
@@ -463,6 +519,10 @@ SAFE_PROJECT_NAME="${29}"
 API_BASE_PATH="${30:-}"
 PARENT_PROJECT_NAME="${31}"
 CHILD_PROFILE_NAME="${32}"
+STAGING_BACKEND_PORT="${33}"
+PRODUCTION_BACKEND_PORT="${34}"
+STAGING_SQL_PORT="${35}"
+PRODUCTION_SQL_PORT="${36}"
 
 env | sort
 echo "DEBUG: All passed arguments"
@@ -539,51 +599,51 @@ allow_if_not_exists() {
   fi
 }
 
-SQL_PORT_START=1435
-SQL_PORT_END=1535   # optional upper limit to prevent crazy high numbers
+# SQL_PORT_START=1435
+# SQL_PORT_END=1535   # optional upper limit to prevent crazy high numbers
 
-find_free_port() {
-  local start=$1
-  local end=$2
-  local used_ports
-  used_ports=$(ss -lnt | awk '{print $4}' | grep -oE '[0-9]+$' | sort -n)
+# find_free_port() {
+#   local start=$1
+#   local end=$2
+#   local used_ports
+#   used_ports=$(ss -lnt | awk '{print $4}' | grep -oE '[0-9]+$' | sort -n)
 
-  for ((p=start; p<=end; p++)); do
-    if ! echo "$used_ports" | grep -qx "$p"; then
-      echo "$p"
-      return 0
-    fi
-  done
+#   for ((p=start; p<=end; p++)); do
+#     if ! echo "$used_ports" | grep -qx "$p"; then
+#       echo "$p"
+#       return 0
+#     fi
+#   done
 
-  return 1  # no free port found
-}
+#   return 1  # no free port found
+# }
 
-SQL_STAGING_PORT=$(find_free_port $SQL_PORT_START $SQL_PORT_END)
-if [[ -z "$SQL_STAGING_PORT" ]]; then
-  echo "❌ No free staging port available!"
-  exit 1
-fi
+# STAGING_SQL_PORT=$(find_free_port $SQL_PORT_START $SQL_PORT_END)
+# if [[ -z "$STAGING_SQL_PORT" ]]; then
+#   echo "❌ No free staging port available!"
+#   exit 1
+# fi
 
-SQL_PRODUCTION_PORT=$((SQL_STAGING_PORT + 1))
-if (( SQL_PRODUCTION_PORT >= SQL_PORT_START && SQL_PRODUCTION_PORT <= SQL_PORT_END )); then
-  if ss -lnt | awk '{print $4}' | grep -q ":$SQL_PRODUCTION_PORT$"; then
-    echo "❌ No free production port available!"
-    exit 1
-  fi
-else
-  echo "❌ Production port exceeds limit!"
-  exit 1
-fi
+# PRODUCTION_SQL_PORT=$((STAGING_SQL_PORT + 1))
+# if (( PRODUCTION_SQL_PORT >= SQL_PORT_START && PRODUCTION_SQL_PORT <= SQL_PORT_END )); then
+#   if ss -lnt | awk '{print $4}' | grep -q ":$PRODUCTION_SQL_PORT$"; then
+#     echo "❌ No free production port available!"
+#     exit 1
+#   fi
+# else
+#   echo "❌ Production port exceeds limit!"
+#   exit 1
+# fi
 
-echo "✅ Allocated ports:"
-echo "  Staging: $SQL_STAGING_PORT"
-echo "  Production: $SQL_PRODUCTION_PORT"
+success "Allocated ports:"
+success "Staging: $STAGING_SQL_PORT"
+success "Production: $PRODUCTION_SQL_PORT"
 
 # Allow rules only if not already present
 allow_if_not_exists "OpenSSH"
 allow_if_not_exists "Nginx Full"
-allow_if_not_exists "$SQL_STAGING_PORT/tcp"
-allow_if_not_exists "$SQL_PRODUCTION_PORT/tcp"
+allow_if_not_exists "$STAGING_SQL_PORT/tcp"
+allow_if_not_exists "$PRODUCTION_SQL_PORT/tcp"
 
 info "💾 Writing environment variables to $ENV_FILE..."
 
@@ -604,12 +664,12 @@ SQLSERVERVOL_NAME_PRODUCTION="sqlserver_${SAFE_PROJECT_NAME}_production"
 SQLSERVERVOL_NAME_STAGING="sqlserver_${SAFE_PROJECT_NAME}_staging"
 
 # Production
-CONNECTION_STRING="Data Source=$VPS_IP,$SQL_PRODUCTION_PORT;Database=$DB_NAME_PRODUCTION;User ID=sa;Password=$PROD_PASS;Encrypt=True;Trust Server Certificate=True"
+CONNECTION_STRING="Data Source=$VPS_IP,$PRODUCTION_SQL_PORT;Database=$DB_NAME_PRODUCTION;User ID=sa;Password=$PROD_PASS;Encrypt=True;Trust Server Certificate=True"
 ADMIN_PASSWORD="$ADMIN_PASSWORD"
 PRODUCTION_URL_TARGET="$PRODUCTION_URL_TARGET"
 
 # Staging
-CONNECTION_STRING_STAGING="Data Source=$VPS_IP,$SQL_STAGING_PORT;Database=$DB_NAME_STAGING;User ID=sa;Password=$STAGING_PASS;Encrypt=True;Trust Server Certificate=True"
+CONNECTION_STRING_STAGING="Data Source=$VPS_IP,$STAGING_SQL_PORT;Database=$DB_NAME_STAGING;User ID=sa;Password=$STAGING_PASS;Encrypt=True;Trust Server Certificate=True"
 ADMIN_PASSWORD_STAGING="$ADMIN_PASSWORD_STAGING"
 
 # Default runtime
@@ -617,7 +677,7 @@ DOTNET_ENVIRONMENT="Production"
 ASPNETCORE_ENVIRONMENT="Production"
 EOF_ENV
 
-debug "SQL_STAGING_PORT: $SQL_STAGING_PORT SQL_PRODUCTION_PORT: $SQL_PRODUCTION_PORT"
+debug "STAGING_SQL_PORT: $STAGING_SQL_PORT debug PRODUCTION_SQL_PORT: $PRODUCTION_SQL_PORT"
 
 chmod 600 "$ENV_FILE"
 chown root:root "$ENV_FILE"
@@ -639,13 +699,13 @@ systemctl daemon-reload
 debug "Source env file for current script run"
 source "$ENV_FILE"
 
-SQL_PRODUCTION_CONTAINER="$SQLSERVERVOL_NAME_PRODUCTION"
-SQL_STAGING_CONTAINER="$SQLSERVERVOL_NAME_STAGING"
+SQL_PRODUCTION_CONTAINER="sqlserver_${SAFE_PROJECT_NAME}_production"
+SQL_STAGING_CONTAINER="sqlserver_${SAFE_PROJECT_NAME}_staging"
 
 info "🐳 Starting MSSQL Docker containers..."
 
 debug "checking if port is in use"
-for p in $SQL_STAGING_PORT $SQL_PRODUCTION_PORT; do
+for p in $STAGING_SQL_PORT $PRODUCTION_SQL_PORT; do
   if ss -lnt | awk '{print $4}' | grep -q ":$p$"; then
     error "Port $p already in use"
     exit 1
@@ -659,7 +719,7 @@ if ! docker ps -q -f name=$SQL_PRODUCTION_CONTAINER | grep -q .; then
     docker run -d --name $SQL_PRODUCTION_CONTAINER \
       -e 'ACCEPT_EULA=Y' -e "MSSQL_SA_PASSWORD=$PROD_PASS" \
       -e 'MSSQL_PID=Express' -v $SQLSERVERVOL_NAME_PRODUCTION:/var/opt/mssql \
-      -p $SQL_PRODUCTION_PORT:1433 --restart=always \
+      -p $PRODUCTION_SQL_PORT:1433 --restart=always \
       mcr.microsoft.com/mssql/server:2019-latest || true
   fi
 else
@@ -673,7 +733,7 @@ if ! docker ps -q -f name=$SQL_STAGING_CONTAINER | grep -q .; then
     docker run -d --name $SQL_STAGING_CONTAINER \
       -e 'ACCEPT_EULA=Y' -e "MSSQL_SA_PASSWORD=$STAGING_PASS" \
       -e 'MSSQL_PID=Express' -v $SQLSERVERVOL_NAME_STAGING:/var/opt/mssql \
-      -p $SQL_STAGING_PORT:1433 --restart=always \
+      -p $STAGING_SQL_PORT:1433 --restart=always \
       mcr.microsoft.com/mssql/server:2019-latest || true
   fi
 else
@@ -739,8 +799,8 @@ declare -A SECRETS_BACKEND=(
   ["SMTP_PASSWORD"]="$SMTP_PASSWORD"
   ["SMTP_FROM"]="$SMTP_FROM"
   ["SMTP_PORT"]="$SMTP_PORT"
-  ["CONNECTION_STRING"]="Data Source=$VPS_IP,$SQL_PRODUCTION_PORT;Database=$DB_NAME_PRODUCTION;User ID=sa;Password=$PROD_PASS;Encrypt=True;Trust Server Certificate=True"
-  ["CONNECTION_STRING_STAGING"]="Data Source=$VPS_IP,$SQL_STAGING_PORT;Database=$DB_NAME_STAGING;User ID=sa;Password=$STAGING_PASS;Encrypt=True;Trust Server Certificate=True"
+  ["CONNECTION_STRING"]="Data Source=$VPS_IP,$PRODUCTION_SQL_PORT;Database=$DB_NAME_PRODUCTION;User ID=sa;Password=$PROD_PASS;Encrypt=True;Trust Server Certificate=True"
+  ["CONNECTION_STRING_STAGING"]="Data Source=$VPS_IP,$STAGING_SQL_PORT;Database=$DB_NAME_STAGING;User ID=sa;Password=$STAGING_PASS;Encrypt=True;Trust Server Certificate=True"
   ["ADMIN_PASSWORD"]="$ADMIN_PASSWORD"
   ["ADMIN_PASSWORD_STAGING"]="$ADMIN_PASSWORD_STAGING"
 )
@@ -822,7 +882,7 @@ cleanup_old_runners
 for APP_LABEL in frontend backend; do
   for ENV in staging production; do
     REPO_NAME="${REPO_MAP[$APP_LABEL]}"
-    DIR="/opt/actions-runners/${APP_LABEL}-${ENV}"
+    DIR="/opt/actions-runners/${REPO_MAP[$APP_LABEL]}-${ENV}"
     CAP_ENV="$(tr '[:lower:]' '[:upper:]' <<< ${ENV:0:1})${ENV:1}"
     LABELS="${APP_LABEL},${CAP_ENV},vps"
 
@@ -843,21 +903,22 @@ for APP_LABEL in frontend backend; do
 
     # Skip if already configured
     if [[ -f config.sh ]] && [[ -f .runner ]]; then
-      warn "Runner already configured at $DIR."
+      warn "Runner already configured at $DIR. Restarting service if needed..."
 
-      SERVICE_PATH="/etc/systemd/system/actions.runner.${REPO_OWNER}-${REPO_NAME//\//.}.${APP_LABEL}-${ENV}.service"
+      SERVICE_NAME="actions.runner.${REPO_OWNER}-${REPO_NAME//\//.}.${APP_LABEL}-${ENV}.service"
+      SERVICE_PATH="/etc/systemd/system/${SERVICE_NAME}"
+
       if [[ ! -f "$SERVICE_PATH" ]]; then
-          ./svc.sh install
-          systemctl daemon-reexec
-          systemctl start "$SERVICE_PATH"
+        warn "Missing service file. Reinstalling..."
+        ./svc.sh install
+        systemctl daemon-reexec
+        systemctl start "$SERVICE_NAME"
       else
-          info "🔄 Service $SERVICE_PATH already exists, restarting..."
-          systemctl daemon-reexec
-          systemctl restart "$SERVICE_PATH"
+        info "🔄 Restarting runner service: $SERVICE_NAME"
+        systemctl daemon-reexec
+        systemctl restart "$SERVICE_NAME"
       fi
-
       continue
-
     fi
 
     info "⬇️ Downloading GitHub Actions runner..."
@@ -905,9 +966,9 @@ mkdir -p /opt/apps
 
 for ENV in production staging; do
   REPO_NAME="$REPO_NAME_1"
-  RUNNER_WORK_DIR="/opt/actions-runners/frontend-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
+  RUNNER_WORK_DIR="/opt/actions-runners/${REPO_MAP[frontend]}-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
   DIST_DIR="${RUNNER_WORK_DIR}/dist"
-  TARGET_DIR="/opt/apps/$API_BASE_PATH/$PROFILE_NAME/$REPO_NAME_1-${ENV}"
+  TARGET_DIR="/opt/apps/${REPO_NAME_1}-${ENV}"
 
   info "Checking build folder for frontend-${ENV}..."
 
@@ -932,9 +993,9 @@ for ENV in production staging; do
   APP="backend"
   REPO_VAR="REPO_NAME_2"
   REPO_NAME="${!REPO_VAR}"
-  APP_NAME="${APP}-${ENV}"
+  APP_NAME="${REPO_NAME}-${ENV}"
 
-  RUNNER_PATH="/opt/actions-runners/${APP}-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
+  RUNNER_PATH="/opt/actions-runners/${REPO_NAME}-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
   info "RUNNER_PATH INITIATED: ${RUNNER_PATH}"
 
   DLL_PATH="${RUNNER_PATH}/WebAppBackend.dll"
@@ -989,7 +1050,7 @@ done
 
 info "💾 Saving PM2 process list so 'pm2 resurrect' can work later"
 
-pm2 startup systemd -u root --hp /root || true
+pm2 startup systemd
 pm2 save --update-env
 
 info "🚀 Running a Github Action Workflow"
@@ -1030,58 +1091,35 @@ done
 
 success "Workflows done!"
 
-info "🔧 Starting Nginx setup"
+info "🔧 Starting Nginx + Certbot setup"
 
-BASE_APP_DIR="/opt/apps/$API_BASE_PATH"
-# Domains mapping
+CERT_PROJECT_NAME="${PROFILE_NAME}"
 
-####### Make this into a backend_port generator
+warn "Cleaning ONLY certificates owned by project: $CERT_PROJECT_NAME"
 
-SQL_PORT_START=1435
-SQL_PORT_END=1535   # optional upper limit to prevent crazy high numbers
+for KEY in "${!DOMAIN_MAP[@]}"; do
+  domain="${DOMAIN_MAP[$KEY]}"
+  cert_name="${domain//./_}"
 
-find_free_port() {
-  local start=$1
-  local end=$2
-  local used_ports
-  used_ports=$(ss -lnt | awk '{print $4}' | grep -oE '[0-9]+$' | sort -n)
-
-  for ((p=start; p<=end; p++)); do
-    if ! echo "$used_ports" | grep -qx "$p"; then
-      echo "$p"
-      return 0
-    fi
-  done
-
-  return 1  # no free port found
-}
-
-SQL_STAGING_PORT=$(find_free_port $SQL_PORT_START $SQL_PORT_END)
-if [[ -z "$SQL_STAGING_PORT" ]]; then
-  echo "❌ No free staging port available!"
-  exit 1
-fi
-
-SQL_PRODUCTION_PORT=$((SQL_STAGING_PORT + 1))
-if (( SQL_PRODUCTION_PORT >= SQL_PORT_START && SQL_PRODUCTION_PORT <= SQL_PORT_END )); then
-  if ss -lnt | awk '{print $4}' | grep -q ":$SQL_PRODUCTION_PORT$"; then
-    echo "❌ No free production port available!"
-    exit 1
+  # scope guard: only delete certs belonging to this deployment
+  if [[ "$cert_name" != *"$CERT_PROJECT_NAME"* ]]; then
+    debug "Skipping unrelated cert: $cert_name"
+    continue
   fi
-else
-  echo "❌ Production port exceeds limit!"
-  exit 1
-fi
 
-echo "✅ Allocated ports:"
-echo "  Staging: $SQL_STAGING_PORT"
-echo "  Production: $SQL_PRODUCTION_PORT"
+  if certbot certificates | grep -q "Certificate Name: $cert_name"; then
+    warn "Deleting cert: $cert_name"
+    certbot delete --cert-name "$cert_name" --non-interactive || true
+  else
+    debug "Cert not found: $cert_name"
+  fi
+done
 
-########
+set -euo pipefail
 
 declare -A BACKEND_PORTS=(
-  ["backend-production"]=5002
-  ["backend-staging"]=5001
+  ["backend-production"]=$PRODUCTION_BACKEND_PORT
+  ["backend-staging"]=$STAGING_BACKEND_PORT
 )
 
 declare -A DOMAIN_MAP=(
@@ -1096,19 +1134,19 @@ info "Generate HTTP-only Nginx configs"
 for APP in frontend backend; do
   for ENV in production staging; do
 
+    APP_PATH="/opt/apps/${PROJECT_NAME}-${ENV}"
     KEY="${APP}-${ENV}"
-    PROJECT_ENV_NAME="${PROJECT_NAME}-${ENV}"
+    # PROJECT_ENV_NAME="${PROJECT_NAME}-${ENV}"
 
     domain="${DOMAIN_MAP[$KEY]}"
-    config_name="${PROJECT_ENV_NAME}-${APP}"
+    config_name="${PROJECT_NAME}-${APP}-${ENV}"
     config_path="/etc/nginx/sites-available/$config_name"
-
-    info "Generating config: $config_name"
 
     cat > "$config_path" <<EOF
 server {
     listen 80;
     server_name $domain www.$domain;
+
 EOF
 
     if [[ "$APP" == "backend" ]]; then
@@ -1124,10 +1162,10 @@ EOF
 EOF
     else
       cat >> "$config_path" <<EOF
-    location /$API_BASE_PATH/$PROFILE_NAME/ {
-        alias /opt/apps/$API_BASE_PATH/$PROFILE_NAME/${REPO_NAME_1}-${ENV}/;
+    location / {
+        root ${APP_PATH};
         index index.html;
-        try_files \$uri \$uri/ index.html;
+        try_files \$uri \$uri/ /index.html;
     }
 EOF
     fi
@@ -1177,8 +1215,8 @@ success "App Setup is complete!"
 EOF_SCRIPT
 }
 
-# === Backup Module program flow & Helper Functions ===
-# === 1. Select Project from previous templates ===
+# === Backup Module program flow & Helper Functions
+# === 1. Select Project from previous templates 
 select_backup_config() {
     shopt -s nullglob
     local configs=("$CONFIG_DIR"/*.env)
@@ -1285,7 +1323,7 @@ init_backup_dirs() {
 backup_get_assets() {
     info "Downloading assets from VPS (compressed)..."
 
-    REMOTE_PATH="/opt/actions-runners/backend-$ENVIRONMENT/_work/$PROFILE_NAME-backend/Uploads"
+    REMOTE_PATH="/opt/actions-runners/${REPO_NAME_2}-${ENVIRONMENT}/_work/${REPO_NAME_2}/Uploads"
     LOCAL_PATH="$BACKUP_DIR/Uploads"
     LOCAL_TAR="$BACKUP_DIR/Uploads.tar.gz"
 
@@ -1297,14 +1335,14 @@ backup_get_assets() {
     debug "Local tarball: $LOCAL_TAR"
 
     # Create compressed archive on VPS
-    ssh -i "$KEY_PATH" "$SSH_USER@$VPS_IP" bash <<EOF
+    ssh "$SSH_USER@$VPS_IP" bash <<EOF
 set -e
 cd "$REMOTE_PATH"
 tar -czf "/tmp/${PROFILE_NAME}_uploads_${ENVIRONMENT}.tar.gz" .
 EOF
 
     # Pull the tarball to local machine
-    rsync -avz -e "ssh -i $KEY_PATH" "$SSH_USER@$VPS_IP:/tmp/${PROFILE_NAME}_uploads_${ENVIRONMENT}.tar.gz" "$LOCAL_TAR"
+    rsync -avz -e ssh "$SSH_USER@$VPS_IP:/tmp/${PROFILE_NAME}_uploads_${ENVIRONMENT}.tar.gz" "$LOCAL_TAR"
     
     # Optionally decompress locally
     if confirm "⏳ Do you want to decompress the Assets?"; then
@@ -1317,7 +1355,7 @@ EOF
 
 
     # Cleanup remote tarball
-    ssh -i "$KEY_PATH" "$SSH_USER@$VPS_IP" rm -f "/tmp/${PROFILE_NAME}_uploads_${ENVIRONMENT}.tar.gz"
+    ssh "$SSH_USER@$VPS_IP" rm -f "/tmp/${PROFILE_NAME}_uploads_${ENVIRONMENT}.tar.gz"
     info "Removing remote tarball"
 
     success "Assets backed up to $LOCAL_PATH (compressed copy: $LOCAL_TAR)"
@@ -1328,7 +1366,7 @@ backup_push_assets() {
     info "Restoring assets to VPS from compressed backup..."
 
     LOCAL_TAR="$BACKUP_DIR/Uploads.tar.gz"
-    REMOTE_UPLOADS="/opt/actions-runners/backend-$ENVIRONMENT/_work/$PROFILE_NAME-backend/Uploads"
+    REMOTE_UPLOADS="/opt/actions-runners/${REPO_NAME_2}-${ENVIRONMENT}/_work/${REPO_NAME_2}/Uploads"
     REMOTE_TAR="/tmp/${PROFILE_NAME}_uploads_${ENVIRONMENT}.tar.gz"
 
     # Validate local backup exists
@@ -1338,10 +1376,10 @@ backup_push_assets() {
     fi
 
     info "📦 Uploading compressed assets to VPS..."
-    rsync -avz -e "ssh -i $KEY_PATH" "$LOCAL_TAR" "$SSH_USER@$VPS_IP:$REMOTE_TAR"
+    rsync -avz -e ssh "$LOCAL_TAR" "$SSH_USER@$VPS_IP:$REMOTE_TAR"
 
     info "📦 Decompressing assets on VPS..."
-    ssh -i "$KEY_PATH" "$SSH_USER@$VPS_IP" bash <<EOF
+    ssh "$SSH_USER@$VPS_IP" bash <<EOF
 set -e
 mkdir -p "$REMOTE_UPLOADS"
 tar -xzf "$REMOTE_TAR" -C "$REMOTE_UPLOADS"
@@ -1355,53 +1393,61 @@ EOF
 backup_get_db() {
     info "Dumping MSSQL database from Docker container..."
 
-    # Paths
-    VPS_CONTAINER_BACKUP="/tmp/${ENVIRONMENT}_${DB_NAME}.bak"       # Backup inside container
-    VPS_HOST_BACKUP="/tmp/${ENVIRONMENT}_${DB_NAME}.bak"            # Backup on VPS host
+    SQL_CONTAINER="sqlserver_${PROFILE_NAME,,}_${ENVIRONMENT}"
+
+    VPS_CONTAINER_BACKUP="/tmp/${ENVIRONMENT}_${DB_NAME}.bak"
+    VPS_HOST_BACKUP="/tmp/${ENVIRONMENT}_${DB_NAME}.bak"
     LOCAL_BAK="$BACKUP_DIR/db/${ENVIRONMENT}_${DB_NAME}.bak"
     LOCAL_BAK_GZ="$LOCAL_BAK.gz"
 
-    # === Step 1: Run SQL Server backup inside container ===
     info "📦 Running BACKUP DATABASE inside container on VPS via SSH..."
-    ssh -i "$KEY_PATH" "$SSH_USER@$VPS_IP" bash <<EOF
+
+    ssh "$SSH_USER@$VPS_IP" bash <<EOF
 set -e
 
-# Ensure container /tmp folder is accessible
-docker exec -u 0 ${PROFILE_NAME}_${ENVIRONMENT} mkdir -p /tmp
+SQL_CONTAINER="$SQL_CONTAINER"
+DB_NAME="$DB_NAME"
+DB_PASS="$DB_PASS"
+BACKUP_PATH="$VPS_CONTAINER_BACKUP"
+HOST_PATH="$VPS_HOST_BACKUP"
 
-# Run SQL Server backup inside container
-docker exec -u 0 ${PROFILE_NAME}_${ENVIRONMENT} /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$DB_PASS" \
-    -Q "BACKUP DATABASE [$DB_NAME] TO DISK = N'$VPS_CONTAINER_BACKUP' WITH INIT"
+# Ensure container backup folder exists
+docker exec -u 0 "\$SQL_CONTAINER" mkdir -p /var/opt/mssql/backups
 
-# Copy backup from container to VPS host
-docker cp "${DB}_${ENVIRONMENT}:${VPS_CONTAINER_BACKUP}" "$VPS_HOST_BACKUP"
+# Run backup inside container
+docker exec -u 0 "\$SQL_CONTAINER" /opt/mssql-tools/bin/sqlcmd \
+  -S localhost -U sa -P "\$DB_PASS" \
+  -Q "BACKUP DATABASE [\$DB_NAME] TO DISK = N'\$BACKUP_PATH' WITH INIT"
 
-# Confirm file exists on VPS host
-ls -lh "$VPS_HOST_BACKUP"
+# Copy from container filesystem to host
+docker cp "\$SQL_CONTAINER:\$BACKUP_PATH" "\$HOST_PATH"
+
+ls -lh "\$HOST_PATH"
+
 EOF
 
-    # === Step 2: Pull backup to local machine via rsync ===
-    info "📦 Pulling backup from VPS host to local machine..."
+    info "📦 Pulling backup from VPS..."
     mkdir -p "$BACKUP_DIR/db"
-    rsync -avz -e "ssh -i $KEY_PATH" "$SSH_USER@$VPS_IP:$VPS_HOST_BACKUP" "$LOCAL_BAK"
-    
-    # === Step 3: Compress locally ===
-    info "📦 Compressing backup locally..."
+
+    rsync -avz -e ssh \
+      "$SSH_USER@$VPS_IP:$VPS_CONTAINER_BACKUP" \
+      "$LOCAL_BAK"
+
     gzip -f "$LOCAL_BAK"
 
-    # === Step 4: Validate ===
     if [[ -s "$LOCAL_BAK_GZ" ]]; then
-        success "Database $DB_NAME dumped and saved to $LOCAL_BAK_GZ"
+        success "Database $DB_NAME dumped to $LOCAL_BAK_GZ"
     else
-        error "Backup failed — file is empty or missing at $LOCAL_BAK_GZ"
+        error "Backup failed"
     fi
 
-    # === Step 5: Cleanup VPS host temporary file ===
-    ssh -i "$KEY_PATH" "$SSH_USER@$VPS_IP" rm -f "$VPS_HOST_BACKUP"
+    ssh "$SSH_USER@$VPS_IP" rm -f "$VPS_CONTAINER_BACKUP"
 }
 
 backup_push_db() {
   info "Restoring MSSQL database to VPS Docker container..."
+  
+  SQL_CONTAINER="sqlserver_${PROFILE_NAME,,}_${ENVIRONMENT}"
 
   LOCAL_BAK_GZ="$BACKUP_DIR/db/${ENVIRONMENT}_${DB_NAME}.bak.gz"
   LOCAL_BAK="${LOCAL_BAK_GZ%.gz}"
@@ -1425,40 +1471,47 @@ backup_push_db() {
 
   # === Step 2: Push backup to VPS host ===
   info "📦 Pushing backup to VPS host via rsync..."
-  rsync -avz -e "ssh -i $KEY_PATH" "$LOCAL_BAK" "$SSH_USER@$VPS_IP:$VPS_HOST_BACKUP"
+  rsync -avz -e ssh "$LOCAL_BAK" "$SSH_USER@$VPS_IP:$VPS_HOST_BACKUP"
 
   # === Step 3: Restore backup inside container via SSH ===
   info "📦 Restoring database inside Docker container on VPS..."
   info "⚠️ Forcing database into SINGLE_USER mode (disconnecting active sessions)"
-  ssh -A -i "$KEY_PATH" "$SSH_USER@$VPS_IP" bash <<EOF
+  ssh "$SSH_USER@$VPS_IP" bash <<EOF
 set -e
 
+SQL_CONTAINER="$SQL_CONTAINER"
+DB_NAME="$DB_NAME"
+DB_PASS="$DB_PASS"
+VPS_HOST_BACKUP="$VPS_HOST_BACKUP"
+BACKUP_PATH="$VPS_CONTAINER_BACKUP"
+
 # Ensure container backup folder exists
-docker exec -u 0 sqlserver_$ENVIRONMENT mkdir -p /var/opt/mssql/backups
+docker exec -u 0 "\$SQL_CONTAINER" mkdir -p /var/opt/mssql/backups
 
 # Copy backup from host into container
-docker cp "$VPS_HOST_BACKUP" "sqlserver_$ENVIRONMENT:$VPS_CONTAINER_BACKUP"
+docker cp "\$VPS_HOST_BACKUP" "\$SQL_CONTAINER:\$BACKUP_PATH"
 
 # Restore database
-docker exec -u 0 sqlserver_$ENVIRONMENT /opt/mssql-tools/bin/sqlcmd \
-    -S localhost -U sa -P "$DB_PASS" -b -Q "
-ALTER DATABASE [$DB_NAME] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-RESTORE DATABASE [$DB_NAME] FROM DISK = N'$VPS_CONTAINER_BACKUP' WITH REPLACE;
-ALTER DATABASE [$DB_NAME] SET MULTI_USER;
+timeout 180 docker exec -u 0 "\$SQL_CONTAINER" /opt/mssql-tools/bin/sqlcmd \
+    -S localhost -U sa -P "\$DB_PASS" -b -Q "
+ALTER DATABASE [\$DB_NAME] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+RESTORE DATABASE [\$DB_NAME] FROM DISK = N'\$BACKUP_PATH' WITH REPLACE;
+ALTER DATABASE [\$DB_NAME] SET MULTI_USER;
 "
 
 # Confirm restoration
-docker exec -u 0 sqlserver_$ENVIRONMENT /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P "$DB_PASS" \
-    -Q "SELECT name, state_desc FROM sys.databases WHERE name = '$DB_NAME'"
+docker exec -u 0 "\$SQL_CONTAINER" /opt/mssql-tools/bin/sqlcmd \
+    -S localhost -U sa -P "\$DB_PASS" \
+    -Q "SELECT name, state_desc FROM sys.databases WHERE name = '\$DB_NAME'"
 
 # Cleanup temporary VPS host backup
-rm -f "$VPS_HOST_BACKUP"
+rm -f "\$VPS_HOST_BACKUP"
 EOF
 
   # Optional: cleanup local decompressed file
   rm -f "$LOCAL_BAK"
 
-  success "Database '$DB_NAME' restored successfully to $ENVIRONMENT container."
+  success "Database '$DB_NAME' restored successfully to $SQL_CONTAINER container."
 }
 
 # === Helper functions for Selecting Backup | Default or Select from List  ===
@@ -1515,8 +1568,23 @@ select_backup_source() {
     done
 }
 
+# === SSH Agent Helper functions ===
+start_ssh_agent() {
+    eval "$(ssh-agent -s)" >/dev/null
+    ssh-add "$KEY_PATH"
+}
+
+cleanup_ssh_agent() {
+    ssh-agent -k >/dev/null
+}
+
 # === 6. Execute ===
 execute_backup() {
+
+    start_ssh_agent
+
+    trap cleanup_ssh_agent EXIT
+
     if [[ "$BACKUP_ACTION" == "get" ]]; then
         init_backup_dirs  # create timestamped folder for backup
     else
