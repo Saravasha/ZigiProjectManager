@@ -172,12 +172,6 @@ main_config() {
     STAGING_SQL_PORT=$(jq -r '.sql_ports.STAGING // empty' "$PROFILE_JSON")
     PRODUCTION_SQL_PORT=$(jq -r '.sql_ports.PRODUCTION // empty' "$PROFILE_JSON")
 
-    debug "STAGING_BACKEND_PORT=$STAGING_BACKEND_PORT"
-    debug "PRODUCTION_BACKEND_PORT=$PRODUCTION_BACKEND_PORT"
-
-    debug "STAGING_SQL_PORT=$STAGING_SQL_PORT"
-    debug "PRODUCTION_SQL_PORT=$PRODUCTION_SQL_PORT"
-
     # =========================
     # 2. Extract CHILD identity (source of truth)
     # =========================
@@ -437,8 +431,6 @@ setup_app() {
       error "No config loaded. Please create or load a config first."
       return
     fi
-
-    debug "PROFILE_NAME='$PROFILE_NAME'"
     
     info "Running VPS setup..."
     
@@ -453,13 +445,7 @@ setup_app() {
     NODE_MAJOR="${NODE_VERSION%%.*}"
     DOTNET_SDK_VERSION="${DOTNET_VERSION#net}"
     
-    debug "$NODE_MAJOR"
-    debug "$DOTNET_SDK_VERSION"
-
-
-    debug_snapshot
-
-    [[ "$DEBUG" == true ]] && debug "escape point reached before ssh operation on VPS." && return 0
+    [[ "$DEBUG" == true ]] && debug_snapshot && debug "escape point reached before ssh operation on VPS." && return 0
 
 # === Step 5: SSH and Setup ===
 ssh -t -i "$KEY_PATH" "$SSH_USER@$VPS_IP" sudo -E bash -s -- \
@@ -473,11 +459,6 @@ ssh -t -i "$KEY_PATH" "$SSH_USER@$VPS_IP" sudo -E bash -s -- \
   "$DB_NAME_STAGING" "$SAFE_PROJECT_NAME" "$API_BASE_PATH" \
   "$PARENT_PROJECT_NAME" "$CHILD_PROFILE_NAME" "$STAGING_BACKEND_PORT" \ "$PRODUCTION_BACKEND_PORT" "$STAGING_SQL_PORT" "$PRODUCTION_SQL_PORT" \ "$PROJECT_NAME" \
 <<'EOF_SCRIPT'
-
-
-
-
-
 
 set -eu
 trap 'echo "❌ Setup failed at line $LINENO"; exit 1' ERR
@@ -927,7 +908,7 @@ for APP_LABEL in frontend backend; do
   done
 done
 
-info "📁 Copying built frontend apps into Nginx target directories..."
+info "📁 Copying built frontend apps artifacts into Nginx target directories..."
 
 mkdir -p /opt/apps
 
@@ -935,9 +916,9 @@ for ENV in production staging; do
   REPO_NAME="$REPO_NAME_1"
   RUNNER_WORK_DIR="/opt/actions-runners/${REPO_MAP[frontend]}-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
   DIST_DIR="${RUNNER_WORK_DIR}/dist"
-  TARGET_DIR="/opt/apps/${REPO_NAME_1}-${ENV}"
+  TARGET_DIR="/opt/apps/${PARENT_PROJECT_NAME}-${ENV}/myapps/${CHILD_PROFILE_NAME}"
 
-  info "Checking build folder for frontend-${ENV}..."
+  info "Checking build folder for ${REPO_NAME_1}-${ENV}..."
 
   if [[ ! -d "$DIST_DIR" ]]; then
     error "Build folder not found at: $DIST_DIR"
@@ -945,11 +926,11 @@ for ENV in production staging; do
     continue
   fi
 
-  info "📦 Copying frontend-${ENV} dist to $TARGET_DIR..."
+  info "📦 Copying ${REPO_NAME_1}-${ENV} dist to $TARGET_DIR..."
   mkdir -p "$TARGET_DIR"
   cp -a "${DIST_DIR}/." "$TARGET_DIR/"
 
-  success "frontend-${ENV} build copied to $TARGET_DIR"
+  success "${REPO_NAME_1}-${ENV} build copied to $TARGET_DIR"
 done
 
 # Running PM2 backend apps
@@ -1058,31 +1039,124 @@ done
 
 success "Workflows done!"
 
-info "🔧 Starting Nginx + Certbot setup"
+# info "🔧 Starting Nginx + Certbot setup"
 
-CERT_PROJECT_NAME="${PROFILE_NAME}"
+# CERT_PROJECT_NAME="${CHILD_PROFILE_NAME}"
 
-warn "Cleaning ONLY certificates owned by project: $CERT_PROJECT_NAME"
+# warn "Cleaning ONLY certificates owned by project: $CERT_PROJECT_NAME"
 
-for KEY in "${!DOMAIN_MAP[@]}"; do
-  domain="${DOMAIN_MAP[$KEY]}"
-  cert_name="${domain//./_}"
+# for KEY in "${!DOMAIN_MAP[@]}"; do
+#   domain="${DOMAIN_MAP[$KEY]}"
+#   cert_name="${domain//./_}"
 
-  # scope guard: only delete certs belonging to this deployment
-  if [[ "$cert_name" != *"$CERT_PROJECT_NAME"* ]]; then
-    debug "Skipping unrelated cert: $cert_name"
-    continue
-  fi
+#   # scope guard: only delete certs belonging to this deployment
+#   if [[ "$cert_name" != *"$CERT_PROJECT_NAME"* ]]; then
+#     debug "Skipping unrelated cert: $cert_name"
+#     continue
+#   fi
 
-  if certbot certificates | grep -q "Certificate Name: $cert_name"; then
-    warn "Deleting cert: $cert_name"
-    certbot delete --cert-name "$cert_name" --non-interactive || true
-  else
-    debug "Cert not found: $cert_name"
-  fi
-done
+#   if certbot certificates | grep -q "Certificate Name: $cert_name"; then
+#     warn "Deleting cert: $cert_name"
+#     certbot delete --cert-name "$cert_name" --non-interactive || true
+#   else
+#     debug "Cert not found: $cert_name"
+#   fi
+# done
 
 set -euo pipefail
+
+register_app() {
+  local name="$1"
+  local app="$2"
+  local env="$3"
+  local domain="$4"
+  local port="$5"
+  local path="$6"
+
+  local registry="/etc/myapp-registry/registry.json"
+  mkdir -p "$(dirname "$registry")"
+  [[ -f "$registry" ]] || echo '{"apps":[]}' > "$registry"
+
+  local route="/myapps/${name}/"
+
+  local id="${env}/${app}/${name}"
+
+  tmp=$(mktemp)
+
+  jq --arg id "$id" \
+     --arg name "$name" \
+     --arg app "$app" \
+     --arg env "$env" \
+     --arg domain "$domain" \
+     --arg route "$route" \
+     --arg path "$path" \
+     --argjson port "${port:-0}" '
+
+    .apps |= map(
+      select(.id != $id)
+    )
+    + [{
+      id: $id,
+      name: $name,
+      app: $app,
+      env: $env,
+      domain: $domain,
+      route: $route,
+      target: {
+        kind: (if $app == "backend" then "proxy" else "static" end),
+        port: $port,
+        root: $path
+      }
+    }]
+  ' "$registry" > "$tmp"
+
+  mv "$tmp" "$registry"
+}
+
+render_nginx_routes() {
+  local registry="/etc/myapp-registry/registry.json"
+  [[ -f "$registry" ]] || return 0
+
+  jq -c '.apps[]' "$registry" | while read -r app; do
+
+    local name env app_type route kind port root
+
+    name=$(jq -r '.name' <<< "$app")
+    env=$(jq -r '.env' <<< "$app")
+    app_type=$(jq -r '.app' <<< "$app")
+    route=$(jq -r '.route' <<< "$app")
+
+    kind=$(jq -r '.target.kind' <<< "$app")
+    port=$(jq -r '.target.port' <<< "$app")
+    root=$(jq -r '.target.root' <<< "$app")
+
+    local include_dir="/etc/nginx/includes/${env}/${app_type}"
+    mkdir -p "$include_dir"
+
+    local file="${include_dir}/${name}.conf"
+
+    if [[ "$kind" == "proxy" ]]; then
+      cat > "$file" <<EOF
+location ^~ ${route} {
+    proxy_pass http://localhost:${port}/;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+}
+EOF
+
+    else
+      cat > "$file" <<EOF
+location ^~ ${route} {
+    alias ${root}/;
+    try_files \$uri \$uri/ /index.html;
+}
+EOF
+    fi
+
+  done
+}
 
 declare -A BACKEND_PORTS=(
   ["backend-production"]=$PRODUCTION_BACKEND_PORT
@@ -1096,52 +1170,39 @@ declare -A DOMAIN_MAP=(
   ["backend-staging"]="admin-staging.$BASE_DOMAIN"
 )
 
-info "Generate HTTP-only Nginx configs"
+info "Generating nginx child fragments for: ${CHILD_PROFILE_NAME}"
+info "Generating registry entries for: ${CHILD_PROFILE_NAME}"
 
 for APP in frontend backend; do
   for ENV in production staging; do
 
-    APP_PATH="/opt/apps/${PARENT_PROJECT_NAME}-${ENV}/myapps/${PROJECT_NAME}"
     KEY="${APP}-${ENV}"
 
-    domain="${DOMAIN_MAP[$KEY]}"
-    config_name="${PARENT_PROJECT_NAME}-${PROJECT_NAME}-${APP}-${ENV}"
-    config_path="/etc/nginx/sites-available/$config_name"
+    APP_PATH="/opt/apps/${PARENT_PROJECT_NAME}-${ENV}/myapps/${CHILD_PROFILE_NAME}"
 
-    cat > "$config_path" <<EOF
-server {
-    listen 80;
-    server_name $domain www.$domain;
+    DOMAIN="${DOMAIN_MAP[$KEY]}"
+    PORT="${BACKEND_PORTS[$KEY]:-0}"
 
-EOF
-
-    if [[ "$APP" == "backend" ]]; then
-      port="${BACKEND_PORTS[$KEY]}"
-      cat >> "$config_path" <<EOF
-    location / {
-        proxy_pass http://localhost:$port;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-EOF
-    else
-      cat >> "$config_path" <<EOF
-    location / {
-        root ${APP_PATH};
-        index index.html;
-        try_files \$uri \$uri/ /index.html;
-    }
-EOF
-    fi
-
-    echo "}" >> "$config_path"
-
-    ln -sf "$config_path" "/etc/nginx/sites-enabled/$config_name"
+    register_app \
+      "$CHILD_PROFILE_NAME" \
+      "$APP" \
+      "$ENV" \
+      "$DOMAIN" \
+      "$PORT" \
+      "$APP_PATH"
 
   done
 done
+
+render_nginx_routes
+
+nginx -t || {
+  error "nginx config invalid"
+  exit 1
+}
+
+systemctl reload nginx
+
 
 info "🔄 Testing Nginx configuration and reloading..."
 if NGINX_OUTPUT=$(nginx -t 2>&1); then

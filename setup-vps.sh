@@ -1309,20 +1309,25 @@ info "Generating HTTP Nginx configs"
 for APP in frontend backend; do
   for ENV in production staging; do
 
-    APP_PATH="/opt/apps/${PROJECT_NAME}-${ENV}"
+    APP_PATH="/opt/apps/${PROJECT_NAME}-${APP}-${ENV}"
     KEY="${APP}-${ENV}"
 
     domain="${DOMAIN_MAP[$KEY]}"
     config_name="${PROJECT_NAME}-${APP}-${ENV}"
     config_path="/etc/nginx/sites-available/$config_name"
+    INCLUDE_DIR="/etc/nginx/includes/${APP}-${ENV}"
+
+    mkdir -p "$INCLUDE_DIR"
 
     cat > "$config_path" <<EOF
 server {
     listen 80;
     server_name $domain www.$domain;
 
-EOF
+    # === CHILD APP ROUTES ===
+    include $INCLUDE_DIR/*.conf;
 
+EOF
     if [[ "$APP" == "backend" ]]; then
       port="${BACKEND_PORTS[$KEY]}"
       cat >> "$config_path" <<EOF
@@ -1333,6 +1338,7 @@ EOF
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
+
 EOF
     else
       cat >> "$config_path" <<EOF
@@ -1341,6 +1347,7 @@ EOF
         index index.html;
         try_files \$uri \$uri/ /index.html;
     }
+    
 EOF
     fi
 

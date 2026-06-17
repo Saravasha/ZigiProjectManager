@@ -39,8 +39,6 @@ debug() {
   fi
 }
 
-
-
 # === Global Paths & Constants ===
 
 # Absolute path to script directory (stable anchor)
@@ -764,13 +762,14 @@ init_frontend_repo() {
         local parent_profile="$PROFILE_DIR/${parent_name}.json"
 
         domain_name="$(jq -r '.domain // ""' "$parent_profile")"
-        deploy_project_name="$parent_name"
+        parent_frontend_project="$(jq -r '.frontend // ""' "$parent_profile")"
+        deploy_project_name="$parent_frontend_project"
 
         route_base="/myapps/$(jq -r '.project_name' "$PROFILE_JSON")"
 
     else
         domain_name="$(jq -r '.domain // ""' "$PROFILE_JSON")"
-        deploy_project_name="$(jq -r '.project_name' "$PROFILE_JSON")"
+        deploy_project_name="$(jq -r '.frontend' "$PROFILE_JSON")"
         route_base=""
     fi
 
@@ -959,7 +958,8 @@ init_backend_repo() {
 
         local RUNNER_BASE="/opt/actions-runners/$BACKEND_NAME-${ENV_NAME}/_work"
         local BACKEND_ROOT="$RUNNER_BASE/$BACKEND_NAME/$BACKEND_NAME"
-        local DLL_PATH="$BACKEND_ROOT/WebAppBackend.dll"
+        local PUBLISH_PATH="opt/apps/${BACKEND_NAME}-${ENV_NAME}"
+        local DLL_PATH="$PUBLISH_PATH/WebAppBackend.dll"
 
         # PM2 app name
         local PM2_APP_NAME="${deploy_project_name}-backend-${ENV_NAME}"
@@ -971,7 +971,8 @@ init_backend_repo() {
 
         sed -i \
             -e "s@__BACKEND_NAME__@$BACKEND_NAME@g" \
-            -e "s@__BACKEND_PUBLISH_PATH__@$(printf '%s' "$BACKEND_ROOT" | sed 's/[\/&]/\\&/g')@g" \
+            -e "s@__BACKEND_PUBLISH_PATH__@$(printf '%s' "$PUBLISH_PATH" | sed 's/[\/&]/\\&/g')@g" \
+            -e "s@__BACKEND_ROOT_PATH__@$(printf '%s' "$BACKEND_ROOT" | sed 's/[\/&]/\\&/g')@g" \
             -e "s@__BACKEND_DLL_PATH__@$(printf '%s' "$DLL_PATH" | sed 's/[\/&]/\\&/g')@g" \
             -e "s@__PM2_APP_NAME__@$PM2_APP_NAME@g" \
             "$file"
@@ -1025,6 +1026,14 @@ if (!string.IsNullOrEmpty(builder.Configuration[\"BasePath\"])) {\\
     # ------------------------------------------------------------------
     GH_TARGET="${GITHUB_ORG:-$REPO_OWNER}"
     [[ -z "$GH_TARGET" || -z "$BACKEND_NAME" ]] && error "Missing repo info" && return 1
+
+    debug "REPO_OWNER = $REPO_OWNER"
+
+    debug "GH_TARGET = $GH_TARGET"
+        debug "BACKEND_NAME = $BACKEND_NAME"
+
+
+    
 
     [[ "$DEBUG" == true ]] && debug "escape point reached before git init." && return 0
 
