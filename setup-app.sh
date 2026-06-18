@@ -344,7 +344,6 @@ EOF
     success "✅ Config saved and loaded: $path"
 }
 
-
 remove_profile() {
   info "🗑️ Remove a saved Child app config:"
 

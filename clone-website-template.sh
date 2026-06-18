@@ -958,7 +958,7 @@ init_backend_repo() {
 
         local RUNNER_BASE="/opt/actions-runners/$BACKEND_NAME-${ENV_NAME}/_work"
         local BACKEND_ROOT="$RUNNER_BASE/$BACKEND_NAME/$BACKEND_NAME"
-        local PUBLISH_PATH="opt/apps/${BACKEND_NAME}-${ENV_NAME}"
+        local PUBLISH_PATH="/opt/apps/${BACKEND_NAME}-${ENV_NAME}"
         local DLL_PATH="$PUBLISH_PATH/WebAppBackend.dll"
 
         # PM2 app name
@@ -1190,15 +1190,6 @@ setup_routed_app() {
 
     local effective_domain
     effective_domain=$(jq -r .domain "$parent_profile")
-
-    # Clone templates
-    # clone_templates
-
-    # Setup project structure
-    #setup_project_structure
-
-    # Initialize frontend & backend
-    # init_github_repos
 
     success "🎉 Routed app [$PROJECT_NAME] setup complete under parent [$effective_domain]"
 }
