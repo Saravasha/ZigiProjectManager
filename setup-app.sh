@@ -915,7 +915,7 @@ for ENV in production staging; do
   REPO_NAME="$REPO_NAME_1"
   RUNNER_WORK_DIR="/opt/actions-runners/${REPO_MAP[frontend]}-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
   DIST_DIR="${RUNNER_WORK_DIR}/dist"
-  TARGET_DIR="/opt/apps/${PARENT_PROJECT_NAME}-${ENV}/myapps/${CHILD_PROFILE_NAME}"
+  TARGET_DIR="/opt/apps/${PARENT_PROJECT_NAME}-${ENV}/myapps/${SAFE_PROJECT_NAME}"
 
   info "Checking build folder for ${REPO_NAME_1}-${ENV}..."
 
@@ -942,7 +942,7 @@ for ENV in production staging; do
   REPO_NAME="${!REPO_VAR}"
   APP_NAME="${REPO_NAME}-${ENV}"
 
-  RUNNER_PATH="/opt/actions-runners/${REPO_NAME}-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
+  RUNNER_PATH="/opt/apps/${APP_NAME}"
   info "RUNNER_PATH INITIATED: ${RUNNER_PATH}"
 
   DLL_PATH="${RUNNER_PATH}/WebAppBackend.dll"
@@ -1137,9 +1137,10 @@ render_nginx_routes() {
     if [[ "$kind" == "proxy" ]]; then
       cat > "$file" <<EOF
 location ^~ ${route} {
-    proxy_pass http://localhost:${port}/;
+    proxy_pass http://localhost:${port};
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-Host $host;
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto \$scheme;
 }
@@ -1177,13 +1178,13 @@ for APP in frontend backend; do
 
     KEY="${APP}-${ENV}"
 
-    APP_PATH="/opt/apps/${PARENT_PROJECT_NAME}-${ENV}/myapps/${CHILD_PROFILE_NAME}"
+    APP_PATH="/opt/apps/${PARENT_PROJECT_NAME}-${ENV}/myapps/${SAFE_PROJECT_NAME}"
 
     DOMAIN="${DOMAIN_MAP[$KEY]}"
     PORT="${BACKEND_PORTS[$KEY]:-0}"
 
     register_app \
-      "$CHILD_PROFILE_NAME" \
+      "$SAFE_PROJECT_NAME" \
       "$APP" \
       "$ENV" \
       "$DOMAIN" \

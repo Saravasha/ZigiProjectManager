@@ -1164,7 +1164,7 @@ for ENV in production staging; do
   REPO_NAME="${!REPO_VAR}"
   APP_NAME="${REPO_NAME}-${ENV}"
 
-  RUNNER_PATH="/opt/actions-runners/${REPO_NAME}-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
+  RUNNER_PATH="/opt/apps/${APP_NAME}"
   info "RUNNER_PATH INITIATED: ${RUNNER_PATH}"
 
   DLL_PATH="${RUNNER_PATH}/WebAppBackend.dll"
@@ -1315,7 +1315,7 @@ for APP in frontend backend; do
     domain="${DOMAIN_MAP[$KEY]}"
     config_name="${PROJECT_NAME}-${APP}-${ENV}"
     config_path="/etc/nginx/sites-available/$config_name"
-    INCLUDE_DIR="/etc/nginx/includes/${APP}-${ENV}"
+    INCLUDE_DIR="/etc/nginx/includes/${ENV}/${APP}"
 
     mkdir -p "$INCLUDE_DIR"
 

@@ -751,6 +751,7 @@ init_frontend_repo() {
     local domain_name=""
     local route_base=""
     local deploy_project_name=""
+    local profile_base=""
 
     # -------------------------
     # Resolve domain + routing
@@ -766,11 +767,13 @@ init_frontend_repo() {
         deploy_project_name="$parent_frontend_project"
 
         route_base="/myapps/$(jq -r '.project_name' "$PROFILE_JSON")"
+        profile_base="/myapps/$(jq -r '.project_name' "$PROFILE_JSON")/"
 
     else
         domain_name="$(jq -r '.domain // ""' "$PROFILE_JSON")"
         deploy_project_name="$(jq -r '.frontend' "$PROFILE_JSON")"
         route_base=""
+        profile_base="/"
     fi
 
     # [[ "$DEBUG" == true ]] && debug "early escape point reached." && return 0
@@ -791,8 +794,8 @@ init_frontend_repo() {
     local STAGING_BASE="/opt/apps/${deploy_project_name}-staging"
     local PRODUCTION_BASE="/opt/apps/${deploy_project_name}-production"
 
-    local STAGING_DEPLOY_PATH="${STAGING_BASE}${route_base}"
-    local PRODUCTION_DEPLOY_PATH="${PRODUCTION_BASE}${route_base}"
+    local STAGING_DEPLOY_PATH="${STAGING_BASE}${route_base,,}"
+    local PRODUCTION_DEPLOY_PATH="${PRODUCTION_BASE}${route_base,,}"
 
     debug "staging = $STAGING_DEPLOY_PATH"
     debug "production = $PRODUCTION_DEPLOY_PATH"
@@ -821,6 +824,9 @@ init_frontend_repo() {
     # -------------------------
     # Vite / env replacement
     # -------------------------
+    local sed_safe_profile_base
+    sed_safe_profile_base=$(echo "$profile_base" | tr '[:upper:]' '[:lower:]')
+
     local api_base_lower
     api_base_lower=$(echo "$api_base" | tr '[:upper:]' '[:lower:]')
 
@@ -831,6 +837,7 @@ init_frontend_repo() {
     frontend_name_lower=$(echo "$FRONTEND_NAME" | tr '[:upper:]' '[:lower:]')
 
     # ONLY ONE SOURCE OF TRUTH
+    sed -i "s|__PROFILE_BASE__|$sed_safe_profile_base|g" vite.config.js
     sed -i "s|__API_BASE__|$sed_safe_api_base|g" vite.config.js
     sed -i "s/\"name\": \".*\"/\"name\": \"${frontend_name_lower}\"/" package.json
 
@@ -932,14 +939,20 @@ init_backend_repo() {
         [[ -f "$file" ]] || continue
 
         local PORT
+        local DOMAIN
         if [[ "$file" == *"appsettings.Production.json" ]]; then
             PORT=$backend_production_port
+            DOMAIN=$domain_name
         elif [[ "$file" == *"appsettings.Staging.json" ]]; then
             PORT=$backend_staging_port
+            DOMAIN=$domain_name
         fi
 
         sed -i \
             -e "s@__PORT__@$PORT@g" \
+            "$file"
+        sed -i \
+            -e "s@__DOMAIN__@$DOMAIN@g" \
             "$file"
     done
     
@@ -985,7 +998,7 @@ init_backend_repo() {
 
     declare -A TOKEN_REPLACEMENTS=(
         ["__PROJECT_NAME__"]="$PROJECT_NAME"
-        ["__API_BASE__"]="$api_base"
+        ["__API_BASE_PATH__"]="$API_BASE_PATH"
         ["__DOMAIN_NAME__"]="$domain_name"
     )
 
