@@ -94,6 +94,14 @@ debug_snapshot() {
   debug "DB_PROD=$DB_NAME_PRODUCTION"
   debug "DB_STAGING=$DB_NAME_STAGING"
 
+  if [[ "$DEBUG" == true ]]; then
+    debug "Cat barfing out the $CONFIG_PATH file" 
+    cat $CONFIG_PATH
+  fi
+
+  
+
+
   debug "==============================="
 }
 
@@ -157,8 +165,8 @@ main_config() {
 
     # === Load repo names from JSON profile ===
     PROFILE_JSON="$CLONE_PROFILE_DIR/$PROFILE_NAME.json"
-    REPO_NAME_1=$(jq -r .frontend "$PROFILE_JSON")
-    REPO_NAME_2=$(jq -r .backend "$PROFILE_JSON")
+    REPO_NAME_1=$(jq -r .safe_frontend "$PROFILE_JSON")
+    REPO_NAME_2=$(jq -r .safe_backend "$PROFILE_JSON")
 
     # === VPS + GitHub settings ===
     read -p "🌐 VPS IP or hostname: " VPS_IP
@@ -1137,9 +1145,9 @@ for ENV in production staging; do
   REPO_NAME="$REPO_NAME_1"
   RUNNER_WORK_DIR="/opt/actions-runners/${REPO_MAP[frontend]}-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
   DIST_DIR="${RUNNER_WORK_DIR}/dist"
-  TARGET_DIR="/opt/apps/${REPO_NAME_1}-${ENV}"
+  TARGET_DIR="/opt/apps/${SAFE_PROJECT_NAME}/frontend/${ENV}"
 
-  info "Checking build folder for frontend-${ENV}..."
+  info "Checking build folder for ${REPO_NAME_1}-${ENV}..."
 
   if [[ ! -d "$DIST_DIR" ]]; then
     error "Build folder not found at: $DIST_DIR"
@@ -1147,11 +1155,11 @@ for ENV in production staging; do
     continue
   fi
 
-  info "📦 Copying frontend-${ENV} dist to $TARGET_DIR..."
+  info "📦 Copying ${SAFE_PROJECT_NAME}-frontend (${ENV}) dist to $TARGET_DIR..."
   mkdir -p "$TARGET_DIR"
   cp -a "${DIST_DIR}/." "$TARGET_DIR/"
 
-  success "frontend-${ENV} build copied to $TARGET_DIR"
+  success "${REPO_NAME_1} (${ENV}) build copied to $TARGET_DIR"
 done
 
 # Running PM2 backend apps
@@ -1164,7 +1172,7 @@ for ENV in production staging; do
   REPO_NAME="${!REPO_VAR}"
   APP_NAME="${REPO_NAME}-${ENV}"
 
-  RUNNER_PATH="/opt/apps/${APP_NAME}"
+  RUNNER_PATH="/opt/apps/${SAFE_PROJECT_NAME}/${APP}/${ENV}/${APP_NAME}"
   info "RUNNER_PATH INITIATED: ${RUNNER_PATH}"
 
   DLL_PATH="${RUNNER_PATH}/WebAppBackend.dll"
@@ -1309,7 +1317,7 @@ info "Generating HTTP Nginx configs"
 for APP in frontend backend; do
   for ENV in production staging; do
 
-    APP_PATH="/opt/apps/${PROJECT_NAME}-${APP}-${ENV}"
+    FRONTEND_APP_PATH="/opt/apps/${SAFE_PROJECT_NAME}/${APP}/${ENV}"
     KEY="${APP}-${ENV}"
 
     domain="${DOMAIN_MAP[$KEY]}"
@@ -1343,7 +1351,7 @@ EOF
     else
       cat >> "$config_path" <<EOF
     location / {
-        root ${APP_PATH};
+        root ${FRONTEND_APP_PATH};
         index index.html;
         try_files \$uri \$uri/ /index.html;
     }

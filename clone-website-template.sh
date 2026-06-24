@@ -152,12 +152,16 @@ normalize_profile() {
     local production_sql_port
 
     # Read current profile fields
-    local project_name domain frontend backend parent_project api_base_path github_pat github_org repo_owner email profile_type project_dir runtimes
+    local project_name safe_project_name domain frontend backend parent_project safe_parent_project api_base_path github_pat github_org repo_owner email profile_type project_dir runtimes
     project_name=$(jq -r '.project_name // empty' "$profile_file")
+    safe_project_name=$(jq -r '.safe_project_name // empty' "$profile_file")
     domain=$(jq -r '.domain // empty' "$profile_file")
     frontend=$(jq -r '.frontend // empty' "$profile_file")
     backend=$(jq -r '.backend // empty' "$profile_file")
+    safe_frontend=$(jq -r '.safe_frontend // empty' "$profile_file")
+    safe_backend=$(jq -r '.safe_backend // empty' "$profile_file")
     parent_project=$(jq -r '.parent_project // empty' "$profile_file")
+    safe_parent_project=$(jq -r '.safe_parent_project // empty' "$profile_file")
     api_base_path=$(jq -r '.api_base_path // empty' "$profile_file")
     github_pat=$(jq -r '.github_pat // empty' "$profile_file")
     github_org=$(jq -r '.github_org // empty' "$profile_file")
@@ -196,10 +200,14 @@ normalize_profile() {
     # --- Write back normalized profile ---
     jq -n \
       --arg project_name "$project_name" \
+      --arg safe_project_name "${project_name,,}" \
       --arg domain "$domain" \
       --arg frontend "$frontend" \
       --arg backend "$backend" \
+      --arg safe_frontend "${frontend,,}" \
+      --arg safe_backend "${backend,,}" \
       --arg parent_project "$parent_project" \
+      --arg safe_parent_project "${parent_project,,}" \
       --arg api_base_path "$api_base_path" \
       --arg github_pat "$github_pat" \
       --arg github_org "$github_org" \
@@ -214,10 +222,14 @@ normalize_profile() {
       --argjson runtimes "$runtimes" \
       '{
         project_name: $project_name,
+        safe_project_name: $safe_project_name,
         domain: $domain,
         frontend: $frontend,
         backend: $backend,
+        safe_frontend: $safe_frontend,
+        safe_backend: $safe_backend,
         parent_project: $parent_project,
+        safe_parent_project: $safe_parent_project,
         api_base_path: $api_base_path,
         github_pat: $github_pat,
         github_org: $github_org,
@@ -297,6 +309,9 @@ create_new_profile() {
     FRONTEND_NAME="${PROJECT_NAME}-frontend"
     BACKEND_NAME="${PROJECT_NAME}-backend"
 
+    SAFE_FRONTEND_NAME="${SAFE_PROJECT_NAME}-frontend"
+    SAFE_BACKEND_NAME="${SAFE_PROJECT_NAME}-backend"
+
     # ✅ SINGLE SOURCE OF TRUTH
     PROJECT_DIR="$(generate_project_dir "$PROJECT_NAME" "$GITHUB_ORG")"
     local child_counter=0
@@ -309,9 +324,12 @@ create_new_profile() {
 
     jq -n \
       --arg project_name "$PROJECT_NAME" \
+      --arg safe_project_name "${PROJECT_NAME,,}" \
       --arg domain "$DOMAIN_NAME" \
       --arg frontend "$FRONTEND_NAME" \
       --arg backend "$BACKEND_NAME" \
+      --arg safe_frontend "$SAFE_FRONTEND_NAME" \
+      --arg safe_backend "$SAFE_BACKEND_NAME" \
       --arg github_pat "$GITHUB_PAT" \
       --arg github_org "$GITHUB_ORG" \
       --arg repo_owner "$REPO_OWNER" \
@@ -321,10 +339,14 @@ create_new_profile() {
       --arg child_counter "$child_counter" \
       '{
         project_name: $project_name,
+        safe_project_name: $safe_project_name,
         domain: $domain,
         frontend: $frontend,
         backend: $backend,
+        safe_frontend: $safe_frontend,
+        safe_backend: $safe_backend,
         parent_project: "",
+        safe_parent_project: "",
         api_base_path: "",
         github_pat: $github_pat,
         github_org: $github_org,
@@ -367,6 +389,9 @@ create_routed_app() {
 
     FRONTEND_NAME="${PROJECT_NAME}-${APP_NAME}-frontend"
     BACKEND_NAME="${PROJECT_NAME}-${APP_NAME}-backend"
+
+    SAFE_FRONTEND_NAME="${SAFE_PROJECT_NAME}-${APP_NAME,,}-frontend"
+    SAFE_BACKEND_NAME="${SAFE_PROJECT_NAME}-${APP_NAME,,}-backend"
 
     API_BASE_PATH="/myapps/$APP_NAME"
     API_BASE_PATH=$(normalize_api_path "$API_BASE_PATH")
@@ -414,10 +439,14 @@ create_routed_app() {
 
     jq -n \
     --arg project_name "$APP_NAME" \
+    --arg safe_project_name "${APP_NAME,,}" \
     --arg domain "$parent_domain" \
     --arg frontend "$FRONTEND_NAME" \
     --arg backend "$BACKEND_NAME" \
+    --arg safe_frontend "$SAFE_FRONTEND_NAME" \
+    --arg safe_backend "$SAFE_BACKEND_NAME" \
     --arg parent_project "$PROJECT_NAME" \
+    --arg safe_parent_project "${PROJECT_NAME,,}" \
     --arg api_base_path "$API_BASE_PATH" \
     --arg github_pat "$GITHUB_PAT" \
     --arg github_org "$GITHUB_ORG" \
@@ -432,10 +461,14 @@ create_routed_app() {
     --argjson production_sql_port "$production_sql_port" \
     '{
         project_name: $project_name,
+        safe_project_name: $safe_project_name,
         domain: $domain,
         frontend: $frontend,
         backend: $backend,
+        safe_frontend: $safe_frontend,
+        safe_backend: $safe_backend,
         parent_project: $parent_project,
+        safe_parent_project: $safe_parent_project,
         api_base_path: $api_base_path,
         github_pat: $github_pat,
         github_org: $github_org,
@@ -461,7 +494,6 @@ create_routed_app() {
     success "Routed app profile saved: $APP_PROFILE"
     set_active_profile "$APP_PROFILE"
 }
-
 
 build_profile_menu() {
 
@@ -578,10 +610,14 @@ load_profile() {
     PROFILE_JSON="$profile"
 
     PROJECT_NAME=$(jq -r .project_name "$profile")
+    SAFE_PROJECT_NAME=$(jq -r .safe_project_name "$profile")
     DOMAIN_NAME=$(jq -r .domain "$profile")
     FRONTEND_NAME=$(jq -r .frontend "$profile")
     BACKEND_NAME=$(jq -r .backend "$profile")
+    SAFE_FRONTEND_NAME=$(jq -r .safe_frontend "$profile")
+    SAFE_BACKEND_NAME=$(jq -r .safe_backend "$profile")
     PARENT_PROJECT=$(jq -r '.parent_project // empty' "$profile")
+    SAFE_PARENT_PROJECT=$(jq -r '.safe_parent_project // empty' "$profile")
     API_BASE_PATH=$(jq -r '.api_base_path // empty' "$profile")
     GITHUB_PAT=$(jq -r .github_pat "$profile")
     GITHUB_ORG=$(jq -r .github_org "$profile")
@@ -691,6 +727,9 @@ setup_project_structure() {
     FRONTEND_NAME=$(jq -r '.frontend' "$PROFILE_JSON")
     BACKEND_NAME=$(jq -r '.backend' "$PROFILE_JSON")
     PROJECT_NAME=$(jq -r '.project_name' "$PROFILE_JSON")
+    SAFE_PROJECT_NAME=$(jq -r '.safe_project_name' "$PROFILE_JSON")
+    SAFE_FRONTEND_NAME=$(jq -r '.safe_frontend' "$PROFILE_JSON")
+    SAFE_BACKEND_NAME=$(jq -r '.safe_backend' "$PROFILE_JSON")
 
     debug "setup_project_structure.project_dir = $PROJECT_DIR"
     debug "setup_project_structure.frontend = $FRONTEND_NAME"
@@ -753,6 +792,8 @@ init_frontend_repo() {
     local deploy_project_name=""
     local profile_base=""
 
+    safe_parent_project="$(jq -r '.safe_parent_project' "$PROFILE_JSON")"
+
     # -------------------------
     # Resolve domain + routing
     # -------------------------
@@ -763,18 +804,21 @@ init_frontend_repo() {
         local parent_profile="$PROFILE_DIR/${parent_name}.json"
 
         domain_name="$(jq -r '.domain // ""' "$parent_profile")"
-        parent_frontend_project="$(jq -r '.frontend // ""' "$parent_profile")"
-        deploy_project_name="$parent_frontend_project"
+        # parent_frontend_project="$(jq -r '.safe_frontend // ""' "$parent_profile")"
+        # deploy_project_name="$parent_frontend_project"
 
-        route_base="/myapps/$(jq -r '.project_name' "$PROFILE_JSON")"
-        profile_base="/myapps/$(jq -r '.project_name' "$PROFILE_JSON")/"
+        route_base="/myapps/$(jq -r '.safe_project_name' "$PROFILE_JSON")"
+        profile_base="/myapps/$(jq -r '.safe_project_name' "$PROFILE_JSON")/"
 
+        project_base="$(jq -r '.safe_parent_project' "$PROFILE_JSON")"
     else
         domain_name="$(jq -r '.domain // ""' "$PROFILE_JSON")"
-        deploy_project_name="$(jq -r '.frontend' "$PROFILE_JSON")"
+        # deploy_project_name="$(jq -r '.safe_frontend' "$PROFILE_JSON")"
         route_base=""
         profile_base="/"
+        project_base="$(jq -r '.safe_project_name' "$PROFILE_JSON")"
     fi
+
 
     # [[ "$DEBUG" == true ]] && debug "early escape point reached." && return 0
 
@@ -791,8 +835,11 @@ init_frontend_repo() {
     # -------------------------
     # Deploy paths
     # -------------------------
-    local STAGING_BASE="/opt/apps/${deploy_project_name}-staging"
-    local PRODUCTION_BASE="/opt/apps/${deploy_project_name}-production"
+    local STAGING_BASE="/opt/apps/${project_base}/frontend/staging"
+    local PRODUCTION_BASE="/opt/apps/${project_base}/frontend/production"
+
+    debug "$STAGING_BASE"
+    debug "$PRODUCTION_BASE"
 
     local STAGING_DEPLOY_PATH="${STAGING_BASE}${route_base,,}"
     local PRODUCTION_DEPLOY_PATH="${PRODUCTION_BASE}${route_base,,}"
@@ -852,7 +899,7 @@ init_frontend_repo() {
 
     GH_TARGET="${GITHUB_ORG:-$REPO_OWNER}"
 
-    if [[ -z "$GH_TARGET" || -z "$FRONTEND_NAME" ]]; then
+    if [[ -z "$GH_TARGET" || -z "$SAFE_FRONTEND_NAME" ]]; then
         error "GH_TARGET or FRONTEND_NAME is empty!"
         return 1
     fi
@@ -869,7 +916,7 @@ init_frontend_repo() {
         return 1
     }
 
-    gh repo create "$GH_TARGET/$FRONTEND_NAME" --private --source="$frontend_path" --push \
+    gh repo create "$GH_TARGET/$SAFE_FRONTEND_NAME" --private --source="$frontend_path" --push \
     || { error "GitHub repo creation failed (frontend)"; return 1; }
 
     for branch in dev stage; do
@@ -880,7 +927,7 @@ init_frontend_repo() {
     git checkout main
     cd - >/dev/null
 
-    success "Frontend repo initialized: $FRONTEND_NAME"
+    success "Frontend repo initialized: $SAFE_FRONTEND_NAME"
 }
 
 # === Function: Initialize Backend Repo ===
@@ -895,11 +942,18 @@ init_backend_repo() {
     local deploy_project_name=""
     local backend_staging_port=5001
     local backend_production_port=5002
+    local project_base=""
 
+    deploy_project_name="$(jq -r '.safe_parent_project' "$PROFILE_JSON")"
     if [[ "$PROFILE_TYPE" == "apps" ]]; then
-        local parent_project
-        parent_project="$(jq -r '.parent_project' "$PROFILE_JSON")"
 
+        local parent_name
+        parent_name="$(jq -r '.parent_project' "$PROFILE_JSON")"
+
+        debug "parent_name= $parent_name"
+        local parent_profile="$PROFILE_DIR/${parent_name}.json"
+
+        debug "parent_profile= $parent_profile"
         debug "PROFILE_JSON=$PROFILE_JSON"
         backend_staging_port=$(jq -r '.backend_ports.STAGING' "$PROFILE_JSON")
         backend_production_port=$(jq -r '.backend_ports.PRODUCTION' "$PROFILE_JSON")
@@ -907,17 +961,15 @@ init_backend_repo() {
         debug "backend_staging_port=$backend_staging_port"
         debug "backend_production_port=$backend_production_port"
 
-        local parent_profile="$PROFILE_DIR/${parent_project}.json"
-
         domain_name="$(jq -r '.domain // ""' "$parent_profile")"
-        deploy_project_name="$parent_project"
+        deploy_project_name="$safe_parent_project"
 
 
 
-        route_base="/myapps/$(jq -r '.project_name' "$PROFILE_JSON")"
+        route_base="/myapps/$(jq -r '.safe_project_name' "$PROFILE_JSON")"
     else
         domain_name="$(jq -r '.domain // ""' "$PROFILE_JSON")"
-        deploy_project_name="$(jq -r '.project_name' "$PROFILE_JSON")"
+        deploy_project_name="$(jq -r '.safe_project_name' "$PROFILE_JSON")"
         route_base=""
     fi  
 
@@ -969,21 +1021,62 @@ init_backend_repo() {
             ENV_NAME="staging"
         fi
 
-        local RUNNER_BASE="/opt/actions-runners/$BACKEND_NAME-${ENV_NAME}/_work"
-        local BACKEND_ROOT="$RUNNER_BASE/$BACKEND_NAME/$BACKEND_NAME"
-        local PUBLISH_PATH="/opt/apps/${BACKEND_NAME}-${ENV_NAME}"
+
+        
+        safe_parent_project="$(jq -r '.safe_parent_project' "$PROFILE_JSON")"
+
+        # -------------------------
+        # Resolve domain + routing
+        # -------------------------
+        if [[ "$PROFILE_TYPE" == "apps" ]]; then
+            local parent_name
+            parent_name="$(jq -r '.parent_project' "$PROFILE_JSON")"
+
+            local parent_profile="$PROFILE_DIR/${parent_name}.json"
+
+            domain_name="$(jq -r '.domain // ""' "$parent_profile")"
+            # parent_frontend_project="$(jq -r '.safe_frontend // ""' "$parent_profile")"
+            # deploy_project_name="$parent_frontend_project"
+
+            route_base="/myapps/$(jq -r '.safe_project_name' "$PROFILE_JSON")"
+            profile_base="/myapps/$(jq -r '.safe_project_name' "$PROFILE_JSON")/"
+            project_base="$(jq -r '.safe_parent_project' "$PROFILE_JSON")"
+            debug "project_base = $project_base"
+
+        else
+            domain_name="$(jq -r '.domain // ""' "$PROFILE_JSON")"
+            # deploy_project_name="$(jq -r '.safe_frontend' "$PROFILE_JSON")"
+            route_base=""
+            profile_base="/"
+            project_base="$(jq -r '.safe_project_name' "$PROFILE_JSON")"
+        fi
+
+        # [[ "$DEBUG" == true ]] && debug "early escape point reached." && return 0
+
+        # -------------------------
+        # Build final API base
+        # -------------------------
+        local api_base="${domain_name}${route_base}"
+
+        debug "domain_name = $domain_name"
+        debug "route_base = $route_base"
+        debug "api_base = $api_base"
+        # debug "deploy_project_name = $deploy_project_name"
+
+        local RUNNER_BASE="/opt/actions-runners/$SAFE_BACKEND_NAME-${ENV_NAME}/_work"
+        local BACKEND_ROOT="$RUNNER_BASE/$SAFE_BACKEND_NAME/$SAFE_BACKEND_NAME"
+        local PUBLISH_PATH="/opt/apps/${project_base}/backend/${ENV_NAME}/${SAFE_BACKEND_NAME}"
         local DLL_PATH="$PUBLISH_PATH/WebAppBackend.dll"
 
         # PM2 app name
-        local PM2_APP_NAME="${deploy_project_name}-backend-${ENV_NAME}"
-        debug "init_backend_repo.deploy_project_name = ${DEPLOY_PROJECT_NAME}"
+        local PM2_APP_NAME="${project_base}-backend-${ENV_NAME}"
         debug "init_backend_repo.pm2_app_name = ${PM2_APP_NAME}"
         if [[ "$PROFILE_TYPE" == "apps" ]]; then
-            PM2_APP_NAME="${BACKEND_NAME}-${ENV_NAME}"
+            PM2_APP_NAME="${SAFE_BACKEND_NAME}-${ENV_NAME}"
         fi
 
         sed -i \
-            -e "s@__BACKEND_NAME__@$BACKEND_NAME@g" \
+            -e "s@__BACKEND_NAME__@$SAFE_BACKEND_NAME@g" \
             -e "s@__BACKEND_PUBLISH_PATH__@$(printf '%s' "$PUBLISH_PATH" | sed 's/[\/&]/\\&/g')@g" \
             -e "s@__BACKEND_ROOT_PATH__@$(printf '%s' "$BACKEND_ROOT" | sed 's/[\/&]/\\&/g')@g" \
             -e "s@__BACKEND_DLL_PATH__@$(printf '%s' "$DLL_PATH" | sed 's/[\/&]/\\&/g')@g" \
@@ -1038,12 +1131,12 @@ if (!string.IsNullOrEmpty(builder.Configuration[\"BasePath\"])) {\\
     # GitHub repo
     # ------------------------------------------------------------------
     GH_TARGET="${GITHUB_ORG:-$REPO_OWNER}"
-    [[ -z "$GH_TARGET" || -z "$BACKEND_NAME" ]] && error "Missing repo info" && return 1
+    [[ -z "$GH_TARGET" || -z "$SAFE_BACKEND_NAME" ]] && error "Missing repo info" && return 1
 
     debug "REPO_OWNER = $REPO_OWNER"
 
     debug "GH_TARGET = $GH_TARGET"
-        debug "BACKEND_NAME = $BACKEND_NAME"
+        debug "BACKEND_NAME = $SAFE_BACKEND_NAME"
 
 
     
@@ -1060,7 +1153,7 @@ if (!string.IsNullOrEmpty(builder.Configuration[\"BasePath\"])) {\\
         return 1
     }
 
-    gh repo create "$GH_TARGET/$BACKEND_NAME" --private --source="$backend_path" --push \
+    gh repo create "$GH_TARGET/$SAFE_BACKEND_NAME" --private --source="$backend_path" --push \
     || { error "GitHub repo creation failed (backend)"; return 1; }
 
     for branch in dev stage; do
@@ -1070,7 +1163,7 @@ if (!string.IsNullOrEmpty(builder.Configuration[\"BasePath\"])) {\\
 
     git checkout main
     cd - >/dev/null
-    success "✅ Backend repo initialized: $BACKEND_NAME"
+    success "✅ Backend repo initialized: $SAFE_BACKEND_NAME"
 }
 
 

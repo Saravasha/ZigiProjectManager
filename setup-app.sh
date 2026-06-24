@@ -71,50 +71,11 @@ debug_snapshot() {
   # clone-website profile reference
   debug "PROFILE_NAME=$PROFILE_NAME"
   echo
-  debug "FRONTEND_REPO=$REPO_NAME_1"
-  debug "BACKEND_REPO=$REPO_NAME_2"
-  debug "PROJECT_NAME=$PROJECT_NAME"
-  debug "CHILD_PROFILE_NAME=$CHILD_PROFILE_NAME"
-  debug "PARENT_PROJECT_NAME=$PARENT_PROJECT_NAME"
-  debug "KEY_NAME=$KEY_NAME"
-  debug "KEY_PATH=$KEY_PATH"
-  debug "PUB_KEY=$PUB_KEY"
-  debug "VPS_IP=$VPS_IP"
-  debug "SSH_USER=$SSH_USER"
-  debug "STAGING_PASS=$STAGING_PASS"
-  debug "PROD_PASS=$PROD_PASS"
-  debug "BASE_DOMAIN=$BASE_DOMAIN"
-  debug "DOMAIN_FE_PROD=$DOMAIN_FE_PROD"
-  debug "DOMAIN_FE_STAGING=$DOMAIN_FE_STAGING"
-  debug "DOMAIN_BE_PROD=$DOMAIN_BE_PROD"
-  debug "DOMAIN_BE_STAGING=$DOMAIN_BE_STAGING"
-  debug "PRODUCTION_URL_TARGET=$PRODUCTION_URL_TARGET"
-  debug "ADMIN_PASSWORD=$ADMIN_PASSWORD"
-  debug "ADMIN_PASSWORD_STAGING=$ADMIN_PASSWORD_STAGING"
-  debug "REPO_OWNER=$REPO_OWNER"
-  debug "REPO_NAME_1=$REPO_NAME_1"
-  debug "REPO_NAME_2=$REPO_NAME_2"
-  debug "GITHUB_PAT=$GITHUB_PAT"
-  debug "SSL_EMAIL=$SSL_EMAIL"
-  debug "API_BASE_PATH=$API_BASE_PATH"
-  debug "DB_NAME_PRODUCTION=$DB_NAME_PRODUCTION"
-  debug "DB_NAME_STAGING=$DB_NAME_STAGING"
-  debug "SAFE_PROJECT_NAME=$SAFE_PROJECT_NAME"
-  debug "STAGING_BACKEND_PORT=$STAGING_BACKEND_PORT"
-  debug "PRODUCTION_BACKEND_PORT=$PRODUCTION_BACKEND_PORT"
-  debug "STAGING_SQL_PORT=$STAGING_SQL_PORT"
-  debug "PRODUCTION_SQL_PORT=$PRODUCTION_SQL_PORT"
-  echo
-  debug "NODE_MAJOR=$NODE_MAJOR"
-  debug "DOTNET=$DOTNET_SDK_VERSION"
-  echo
-  # SMTP Profile reference
-  debug "SMTP_PROFILE_NAME=$SMTP_PROFILE_NAME"
-  debug "SMTP_HOST=$SMTP_HOST"
-  debug "SMTP_USERNAME=$SMTP_USERNAME"
-  debug "SMTP_PASSWORD=$SMTP_PASSWORD"
-  debug "SMTP_FROM=$SMTP_FROM"
-  debug "SMTP_PORT=$SMTP_PORT"
+  if [[ "$DEBUG" == true ]]; then
+    debug "Cat barfing out the $CONFIG_PATH file" 
+    cat $CONFIG_PATH
+  fi
+
   debug "==============================="
 }
 
@@ -177,6 +138,7 @@ main_config() {
     # =========================
     PROJECT_NAME=$(jq -r '.project_name // empty' "$PROFILE_JSON")
     PARENT_PROJECT_NAME=$(jq -r '.parent_project // empty' "$PROFILE_JSON")
+    SAFE_PARENT_NAME="${PARENT_PROJECT_NAME,,}"
     API_BASE_PATH=$(jq -r '.api_base_path // empty' "$PROFILE_JSON")
 
 
@@ -190,10 +152,9 @@ main_config() {
         return 1
     }
 
-    CHILD_PROFILE_NAME="$PROJECT_NAME"
     PROFILE_NAME="$PROJECT_NAME"
 
-    SAFE_PROJECT_NAME=$(echo "$PROJECT_NAME" \
+    SAFE_CHILD_NAME=$(echo "$PROJECT_NAME" \
         | tr '[:upper:]' '[:lower:]' \
         | tr -cd '[:alnum:]_-')
 
@@ -218,22 +179,22 @@ main_config() {
 
 
     # REMOVE any parent contamination that can overwrite child identity
-    unset SAFE_PROJECT_NAME
+    unset SAFE_CHILD_NAME
 
     # =========================
     # 4. RE-APPLY CHILD AUTHORITY (FINAL TRUTH)
     # =========================
-    SAFE_PROJECT_NAME=$(echo "$PROJECT_NAME" \
+    SAFE_CHILD_NAME=$(echo "$PROJECT_NAME" \
         | tr '[:upper:]' '[:lower:]' \
         | tr -cd '[:alnum:]_-')
 
-    DB_NAME_PRODUCTION="${SAFE_PROJECT_NAME}_production"
-    DB_NAME_STAGING="${SAFE_PROJECT_NAME}_staging"
+    DB_NAME_PRODUCTION="${SAFE_CHILD_NAME}_production"
+    DB_NAME_STAGING="${SAFE_CHILD_NAME}_staging"
 
     # NOW export final truth only
     export PROJECT_NAME PARENT_PROJECT_NAME API_BASE_PATH
-    export CHILD_PROFILE_NAME PROFILE_NAME
-    export SAFE_PROJECT_NAME PRODUCTION_BACKEND_PORT STAGING_BACKEND_PORT STAGING_SQL_PORT PRODUCTION_SQL_PORT
+    export PROFILE_NAME
+    export SAFE_CHILD_NAME PRODUCTION_BACKEND_PORT STAGING_BACKEND_PORT STAGING_SQL_PORT PRODUCTION_SQL_PORT SAFE_PARENT_NAME
 
 
     # =========================
@@ -248,8 +209,8 @@ main_config() {
     # =========================
     # 6. Load repos (child ONLY)
     # =========================
-    REPO_NAME_1=$(jq -r '.frontend // empty' "$PROFILE_JSON")
-    REPO_NAME_2=$(jq -r '.backend // empty' "$PROFILE_JSON")
+    REPO_NAME_1=$(jq -r '.safe_frontend // empty' "$PROFILE_JSON")
+    REPO_NAME_2=$(jq -r '.safe_backend // empty' "$PROFILE_JSON")
 
     [[ -n "$REPO_NAME_1" ]] || { error "frontend repo missing"; return 1; }
     [[ -n "$REPO_NAME_2" ]] || { error "backend repo missing"; return 1; }
@@ -294,6 +255,8 @@ persist_config() {
 
     cat > "$path" <<EOF
 PARENT_PROJECT_NAME="$PARENT_PROJECT_NAME"
+SAFE_PARENT_NAME="$SAFE_PARENT_NAME"
+SAFE_CHILD_NAME="$SAFE_CHILD_NAME"
 
 KEY_NAME="$KEY_NAME"
 KEY_PATH="$KEY_PATH"
@@ -318,12 +281,10 @@ SSL_EMAIL="$SSL_EMAIL"
 API_BASE_PATH="$API_BASE_PATH"
 DB_NAME_PRODUCTION="$DB_NAME_PRODUCTION"
 DB_NAME_STAGING="$DB_NAME_STAGING"
-SAFE_PROJECT_NAME="$SAFE_PROJECT_NAME"
 STAGING_BACKEND_PORT="$STAGING_BACKEND_PORT"
 PRODUCTION_BACKEND_PORT="$PRODUCTION_BACKEND_PORT"
 STAGING_SQL_PORT="$STAGING_SQL_PORT"
 PRODUCTION_SQL_PORT="$PRODUCTION_SQL_PORT"
-
 
 # clone-website profile reference
 PROFILE_NAME="$PROFILE_NAME"
@@ -455,8 +416,8 @@ ssh -t -i "$KEY_PATH" "$SSH_USER@$VPS_IP" sudo -E bash -s -- \
   "$DOMAIN_BE_PROD" "$DOMAIN_BE_STAGING" "$SMTP_HOST" "$SMTP_USERNAME" \
   "$SMTP_PASSWORD" "$SMTP_FROM" "$SMTP_PORT" "$PROFILE_NAME" "$NODE_MAJOR" \
   "$DOTNET_SDK_VERSION" "$DEBUG" "$DEBUG_VERBOSE" "$DB_NAME_PRODUCTION" \
-  "$DB_NAME_STAGING" "$SAFE_PROJECT_NAME" "$API_BASE_PATH" \
-  "$PARENT_PROJECT_NAME" "$CHILD_PROFILE_NAME" "$STAGING_BACKEND_PORT" \ "$PRODUCTION_BACKEND_PORT" "$STAGING_SQL_PORT" "$PRODUCTION_SQL_PORT" \ "$PROJECT_NAME" \
+  "$DB_NAME_STAGING" "$SAFE_CHILD_NAME" "$API_BASE_PATH" \
+  "$PARENT_PROJECT_NAME" "$STAGING_BACKEND_PORT" \ "$PRODUCTION_BACKEND_PORT" "$STAGING_SQL_PORT" "$PRODUCTION_SQL_PORT" \ "$PROJECT_NAME" "$SAFE_PARENT_NAME" \
 <<'EOF_SCRIPT'
 
 set -eu
@@ -495,15 +456,15 @@ DEBUG="${25:-false}"
 DEBUG_VERBOSE="${26:-false}"
 DB_NAME_PRODUCTION="${27}"
 DB_NAME_STAGING="${28}"
-SAFE_PROJECT_NAME="${29}"
+SAFE_CHILD_NAME="${29}"
 API_BASE_PATH="${30:-}"
 PARENT_PROJECT_NAME="${31}"
-CHILD_PROFILE_NAME="${32}"
-STAGING_BACKEND_PORT="${33}"
-PRODUCTION_BACKEND_PORT="${34}"
-STAGING_SQL_PORT="${35}"
-PRODUCTION_SQL_PORT="${36}"
-PROJECT_NAME="${37}"
+STAGING_BACKEND_PORT="${32}"
+PRODUCTION_BACKEND_PORT="${33}"
+STAGING_SQL_PORT="${34}"
+PRODUCTION_SQL_PORT="${35}"
+PROJECT_NAME="${36}"
+SAFE_PARENT_NAME="${37}"
 
 echo "$PROJECT_NAME"
 
@@ -530,9 +491,9 @@ info "💡 We are on the remote machine now!"
 debug "Setting environment file"
 
 SAFE_REPO_OWNER=$(echo "$REPO_OWNER" | tr -cd '[:alnum:]_-')
-ENV_FILE="/etc/myapp_${SAFE_REPO_OWNER}-${CHILD_PROFILE_NAME}.env"
+ENV_FILE="/etc/myapp_${SAFE_REPO_OWNER}-${SAFE_CHILD_NAME}.env"
 
-RUNNER_PREFIX="${SAFE_REPO_OWNER}-${CHILD_PROFILE_NAME}"
+RUNNER_PREFIX="${SAFE_REPO_OWNER}-${SAFE_CHILD_NAME}"
 
 cleanup_old_runners() {
     info "Cleaning up GitHub Actions runners for this child app only: $RUNNER_PREFIX"
@@ -607,8 +568,8 @@ DB_NAME_PRODUCTION="$DB_NAME_PRODUCTION"
 DB_NAME_STAGING="$DB_NAME_STAGING"
 
 # sql server volumes
-SQLSERVERVOL_NAME_PRODUCTION="sqlserver_${SAFE_PROJECT_NAME}_production"
-SQLSERVERVOL_NAME_STAGING="sqlserver_${SAFE_PROJECT_NAME}_staging"
+SQLSERVERVOL_NAME_PRODUCTION="sqlserver_${SAFE_CHILD_NAME}_production"
+SQLSERVERVOL_NAME_STAGING="sqlserver_${SAFE_CHILD_NAME}_staging"
 
 # Production
 CONNECTION_STRING="Data Source=$VPS_IP,$PRODUCTION_SQL_PORT;Database=$DB_NAME_PRODUCTION;User ID=sa;Password=$PROD_PASS;Encrypt=True;Trust Server Certificate=True"
@@ -646,8 +607,8 @@ systemctl daemon-reload
 debug "Source env file for current script run"
 source "$ENV_FILE"
 
-SQL_PRODUCTION_CONTAINER="sqlserver_${SAFE_PROJECT_NAME}_production"
-SQL_STAGING_CONTAINER="sqlserver_${SAFE_PROJECT_NAME}_staging"
+SQL_PRODUCTION_CONTAINER="sqlserver_${SAFE_CHILD_NAME}_production"
+SQL_STAGING_CONTAINER="sqlserver_${SAFE_CHILD_NAME}_staging"
 
 info "🐳 Starting MSSQL Docker containers..."
 
@@ -915,7 +876,7 @@ for ENV in production staging; do
   REPO_NAME="$REPO_NAME_1"
   RUNNER_WORK_DIR="/opt/actions-runners/${REPO_MAP[frontend]}-${ENV}/_work/${REPO_NAME}/${REPO_NAME}"
   DIST_DIR="${RUNNER_WORK_DIR}/dist"
-  TARGET_DIR="/opt/apps/${PARENT_PROJECT_NAME}-${ENV}/myapps/${SAFE_PROJECT_NAME}"
+  TARGET_DIR="/opt/apps/${SAFE_PARENT_NAME}/frontend/${ENV}/myapps/${SAFE_CHILD_NAME}"
 
   info "Checking build folder for ${REPO_NAME_1}-${ENV}..."
 
@@ -925,11 +886,11 @@ for ENV in production staging; do
     continue
   fi
 
-  info "📦 Copying ${REPO_NAME_1}-${ENV} dist to $TARGET_DIR..."
+  info "📦 Copying ${SAFE_CHILD_NAME}-frontend (${ENV}) dist to $TARGET_DIR..."
   mkdir -p "$TARGET_DIR"
   cp -a "${DIST_DIR}/." "$TARGET_DIR/"
 
-  success "${REPO_NAME_1}-${ENV} build copied to $TARGET_DIR"
+  success "${REPO_NAME_1} (${ENV}) build copied to $TARGET_DIR"
 done
 
 # Running PM2 backend apps
@@ -942,7 +903,7 @@ for ENV in production staging; do
   REPO_NAME="${!REPO_VAR}"
   APP_NAME="${REPO_NAME}-${ENV}"
 
-  RUNNER_PATH="/opt/apps/${APP_NAME}"
+  RUNNER_PATH="/opt/apps/${SAFE_PARENT_NAME}/${APP}/${ENV}/${APP_NAME}"
   info "RUNNER_PATH INITIATED: ${RUNNER_PATH}"
 
   DLL_PATH="${RUNNER_PATH}/WebAppBackend.dll"
@@ -1038,30 +999,6 @@ done
 
 success "Workflows done!"
 
-# info "🔧 Starting Nginx + Certbot setup"
-
-# CERT_PROJECT_NAME="${CHILD_PROFILE_NAME}"
-
-# warn "Cleaning ONLY certificates owned by project: $CERT_PROJECT_NAME"
-
-# for KEY in "${!DOMAIN_MAP[@]}"; do
-#   domain="${DOMAIN_MAP[$KEY]}"
-#   cert_name="${domain//./_}"
-
-#   # scope guard: only delete certs belonging to this deployment
-#   if [[ "$cert_name" != *"$CERT_PROJECT_NAME"* ]]; then
-#     debug "Skipping unrelated cert: $cert_name"
-#     continue
-#   fi
-
-#   if certbot certificates | grep -q "Certificate Name: $cert_name"; then
-#     warn "Deleting cert: $cert_name"
-#     certbot delete --cert-name "$cert_name" --non-interactive || true
-#   else
-#     debug "Cert not found: $cert_name"
-#   fi
-# done
-
 set -euo pipefail
 
 register_app() {
@@ -1133,9 +1070,14 @@ render_nginx_routes() {
     mkdir -p "$include_dir"
 
     local file="${include_dir}/${name}.conf"
+    local route_no_slash="${route%/}"
 
     if [[ "$kind" == "proxy" ]]; then
+    #for backend apps
       cat > "$file" <<EOF
+      location = ${route_no_slash} {
+        return 308 ${route};
+      }
 location ^~ ${route} {
     proxy_pass http://localhost:${port};
     proxy_http_version 1.1;
@@ -1147,7 +1089,11 @@ location ^~ ${route} {
 EOF
 
     else
+    #for frontend apps
       cat > "$file" <<EOF
+location = ${route_no_slash} {
+    return 308 ${route};
+}
 location ^~ ${route} {
     alias ${root}/;
     try_files \$uri \$uri/ /index.html;
@@ -1170,26 +1116,27 @@ declare -A DOMAIN_MAP=(
   ["backend-staging"]="admin-staging.$BASE_DOMAIN"
 )
 
-info "Generating nginx child fragments for: ${CHILD_PROFILE_NAME}"
-info "Generating registry entries for: ${CHILD_PROFILE_NAME}"
+info "Generating nginx child fragments for: ${SAFE_CHILD_NAME}"
+info "Generating registry entries for: ${SAFE_CHILD_NAME}"
 
 for APP in frontend backend; do
   for ENV in production staging; do
 
+# encase this in a if statement to only serve frontend apps
+  
     KEY="${APP}-${ENV}"
-
-    APP_PATH="/opt/apps/${PARENT_PROJECT_NAME}-${ENV}/myapps/${SAFE_PROJECT_NAME}"
+    FRONTEND_APP_PATH="/opt/apps/${SAFE_PARENT_NAME}/${APP}/${ENV}/myapps/${SAFE_CHILD_NAME}"
 
     DOMAIN="${DOMAIN_MAP[$KEY]}"
     PORT="${BACKEND_PORTS[$KEY]:-0}"
 
     register_app \
-      "$SAFE_PROJECT_NAME" \
+      "$SAFE_CHILD_NAME" \
       "$APP" \
       "$ENV" \
       "$DOMAIN" \
       "$PORT" \
-      "$APP_PATH"
+      "$FRONTEND_APP_PATH"
 
   done
 done
